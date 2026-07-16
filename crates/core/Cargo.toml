@@ -1,0 +1,30 @@
+[package]
+name = "lightwallet-core"
+description = "Variant- and transport-generic client layer for Zcash lightwalletd-style indexers"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tonic.workspace = true
+futures-util.workspace = true
+trait-variant = "0.1"
+lightwallet-proto-canonical = { path = "../canonical", optional = true }
+lightwallet-proto-crosslink = { path = "../crosslink", optional = true }
+
+[dev-dependencies]
+lightwallet-test-support = { path = "../test-support" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tonic = { workspace = true, features = ["tls-ring", "tls-webpki-roots"] }
+
+[features]
+default = ["canonical"]
+canonical = ["dep:lightwallet-proto-canonical"]
+crosslink = ["dep:lightwallet-proto-crosslink"]

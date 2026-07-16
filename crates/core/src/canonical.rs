@@ -1,0 +1,129 @@
+use crate::error::wrap_stream;
+use crate::identity::impl_identity_methods;
+use crate::streamer::impl_streamer_methods;
+use crate::transport::GrpcTransport;
+use crate::{CompactBlockHeader, NetworkParams, Result, TestnetIndexer};
+use futures_util::stream::BoxStream;
+use lightwallet_proto_canonical as proto;
+use lightwallet_proto_canonical::compact_tx_streamer_client::CompactTxStreamerClient;
+use lightwallet_proto_canonical::{BlockId, BlockRange, ChainSpec, CompactBlock, Empty, TreeState};
+
+impl CompactBlockHeader for CompactBlock {
+    fn height(&self) -> u64 {
+        self.height
+    }
+    fn hash(&self) -> &[u8] {
+        &self.hash
+    }
+    fn prev_hash(&self) -> &[u8] {
+        &self.prev_hash
+    }
+}
+
+/// Indexer for the CANONICAL variant.
+pub struct CanonicalIndexer<T> {
+    client: CompactTxStreamerClient<T>,
+    params: NetworkParams,
+}
+
+impl<T: GrpcTransport> CanonicalIndexer<T> {
+    /// Wrap `transport` as a CANONICAL indexer carrying `params`.
+    pub fn new(transport: T, params: NetworkParams) -> Self {
+        Self {
+            client: CompactTxStreamerClient::new(transport),
+            params,
+        }
+    }
+}
+
+impl_streamer_methods!(CanonicalIndexer, proto);
+
+/// One unlinkability domain on the CANONICAL variant: the identity-bearing
+/// RPCs, over a transport of their own. Mint one per identity the wallet
+/// wants a server to see as a stranger (each transparent address, each
+/// broadcast, each confirmation poll); see docs/adr/0001.
+pub struct CanonicalIdentityClient<T> {
+    client: CompactTxStreamerClient<T>,
+}
+
+impl<T: GrpcTransport> CanonicalIdentityClient<T> {
+    /// `transport` must not be shared with the sync channel or with another
+    /// identity client, or the domains collapse into one.
+    pub fn new(transport: T) -> Self {
+        Self {
+            client: CompactTxStreamerClient::new(transport),
+        }
+    }
+}
+
+impl_identity_methods!(CanonicalIdentityClient, proto);
+
+impl<T: GrpcTransport> TestnetIndexer for CanonicalIndexer<T> {
+    type Block = CompactBlock;
+    type TreeState = TreeState;
+
+    async fn get_latest_height(&self) -> Result<u64> {
+        let mut client = self.client.clone();
+        Ok(client
+            .get_latest_block(ChainSpec {})
+            .await?
+            .into_inner()
+            .height)
+    }
+
+    async fn get_block(&self, height: u64) -> Result<CompactBlock> {
+        let mut client = self.client.clone();
+        let block = client
+            .get_block(BlockId {
+                height,
+                hash: Vec::new(),
+            })
+            .await?
+            .into_inner();
+        Ok(block)
+    }
+
+    async fn get_block_range(
+        &self,
+        start: u64,
+        end: u64,
+    ) -> Result<BoxStream<'static, Result<CompactBlock>>> {
+        let mut client = self.client.clone();
+        let blocks = client
+            .get_block_range(BlockRange {
+                start: Some(BlockId {
+                    height: start,
+                    hash: Vec::new(),
+                }),
+                end: Some(BlockId {
+                    height: end,
+                    hash: Vec::new(),
+                }),
+                pool_types: Vec::new(),
+            })
+            .await?
+            .into_inner();
+        Ok(wrap_stream(blocks))
+    }
+
+    async fn get_tree_state(&self, height: u64) -> Result<TreeState> {
+        let mut client = self.client.clone();
+        let state = client
+            .get_tree_state(BlockId {
+                height,
+                hash: Vec::new(),
+            })
+            .await?
+            .into_inner();
+        Ok(state)
+    }
+
+    async fn get_latest_tree_state(&self) -> Result<TreeState> {
+        let mut client = self.client.clone();
+        Ok(client.get_latest_tree_state(Empty {}).await?.into_inner())
+    }
+
+    fn network_params(&self) -> &NetworkParams {
+        &self.params
+    }
+}

@@ -1,0 +1,22 @@
+[package]
+name = "lightwallet-transport-tor"
+description = "Tor transport for the lightwallet indexers: arti-backed tonic channels with per-channel circuit isolation"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+arti-client.workspace = true
+hyper-util.workspace = true
+tonic.workspace = true
+tor-rtcompat = "0.44"
+tower.workspace = true
+
+[dev-dependencies]
+lightwallet-core = { path = "../core" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tonic = { workspace = true, features = ["tls-ring", "tls-webpki-roots"] }

@@ -1,0 +1,25 @@
+[package]
+name = "lightwallet-transport-nym"
+description = "Nym mixnet transport for the lightwallet indexers, through a running nym-socks5-client"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+hyper-util.workspace = true
+tokio = { workspace = true, features = ["net"] }
+tokio-socks = "0.5"
+tonic.workspace = true
+tower.workspace = true
+
+[dev-dependencies]
+futures-util.workspace = true
+lightwallet-core = { path = "../core" }
+lightwallet-proto-canonical = { path = "../canonical" }
+lightwallet-test-support = { path = "../test-support" }
+tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread"] }
+tonic = { workspace = true, features = ["tls-ring", "tls-webpki-roots"] }
