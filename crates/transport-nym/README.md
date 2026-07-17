@@ -8,7 +8,7 @@ running `nym-socks5-client` that yields a plain tonic `Channel`, the same
 let socks: SocketAddr = "127.0.0.1:1080".parse()?;
 let endpoint = Endpoint::from_static("https://zec.rocks:443")
     .tls_config(ClientTlsConfig::new().with_webpki_roots())?;
-let indexer = CanonicalIndexer::new(channel(&endpoint, socks).await?, params);
+let indexer = CanonicalIndexerClient::new(channel(&endpoint, socks).await?, params);
 ```
 
 The proxy carries the stream through the mixnet to a network requester,

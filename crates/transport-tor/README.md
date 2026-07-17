@@ -8,7 +8,7 @@ changes construction and nothing else.
 let tor = Arc::new(TorClient::create_bootstrapped(TorClientConfig::default()).await?);
 let endpoint = Endpoint::from_static("https://zec.rocks:443")
     .tls_config(ClientTlsConfig::new().with_webpki_roots())?;
-let indexer = CanonicalIndexer::new(channel(&endpoint, &tor).await?, params);
+let indexer = CanonicalIndexerClient::new(channel(&endpoint, &tor).await?, params);
 ```
 
 Name endpoints by hostname: arti resolves them at the Tor exit, so no DNS

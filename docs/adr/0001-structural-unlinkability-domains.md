@@ -8,7 +8,7 @@ per `channel()`/`channel_lazy()` call, so two channels never share a circuit
 unless the caller groups them deliberately with `channel_with_isolation`.
 The identity-bearing RPCs (request content names a txid, a transparent
 address, or a held-transaction list) live only on the per-domain
-`CanonicalIdentityClient`/`CrosslinkIdentityClient` types. The indexers
+`CanonicalIdentityClient`/`CrosslinkIdentityClient` types. The indexer clients
 cannot issue them. A wallet expresses its own partition by how many identity
 clients it mints, one per identity it wants a server to see as a stranger,
 and core never chooses the partition for it.

@@ -23,10 +23,10 @@ sites, and an in-memory mock harness covers the whole surface offline.
 
 There is no shared normalized block type. Each variant keeps its generated
 types, and genericity comes from a narrow `CompactBlockHeader` capability
-plus associated types on `TestnetIndexer`, which carries only the block-sync
+plus associated types on `IndexerClient`, which carries only the block-sync
 path. The rest of the shared RPC surface is emitted as identical inherent
 methods on both indexers, and variant-only RPCs exist only on
-`CrosslinkIndexer`, never as an `Option` on something shared.
+`CrosslinkIndexerClient`, never as an `Option` on something shared.
 
 RPCs that name a wallet-specific identifier (txids, transparent addresses,
 held transactions) live on separate identity clients, each over a transport

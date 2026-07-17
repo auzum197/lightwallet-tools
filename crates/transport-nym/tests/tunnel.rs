@@ -13,7 +13,7 @@
 
 use futures_util::StreamExt;
 use lightwallet_core::{
-    CanonicalIndexer, CompactBlockHeader, NetworkParams, TestnetIndexer, assert_continuity,
+    CanonicalIndexerClient, CompactBlockHeader, NetworkParams, IndexerClient, assert_continuity,
 };
 use lightwallet_proto_canonical::compact_tx_streamer_server::CompactTxStreamerServer;
 use lightwallet_test_support::canonical::{MockStreamer, linked_blocks};
@@ -60,7 +60,7 @@ async fn grpc_flows_through_the_tunnel() {
     let channel = lightwallet_transport_nym::channel(&endpoint, proxy.addr)
         .await
         .expect("channel through the mock proxy");
-    let indexer = CanonicalIndexer::new(channel, params());
+    let indexer = CanonicalIndexerClient::new(channel, params());
 
     let tip = indexer.get_latest_height().await.unwrap();
     assert_eq!(tip, 109);
@@ -72,7 +72,7 @@ async fn grpc_flows_through_the_tunnel() {
         let block = block.unwrap();
         block.block_hash().unwrap();
         if let Some(prev) = &prev {
-            assert!(assert_continuity::<CanonicalIndexer<Channel>>(prev, &block));
+            assert!(assert_continuity::<CanonicalIndexerClient<Channel>>(prev, &block));
         }
         prev = Some(block);
         seen += 1;
@@ -98,7 +98,7 @@ async fn channel_lazy_connects_on_first_use() {
     let channel = lightwallet_transport_nym::channel_lazy(&endpoint, proxy.addr);
     assert_eq!(proxy.accepted.load(Ordering::SeqCst), 0);
 
-    let indexer = CanonicalIndexer::new(channel, params());
+    let indexer = CanonicalIndexerClient::new(channel, params());
     assert_eq!(indexer.get_latest_height().await.unwrap(), 109);
     assert_eq!(proxy.accepted.load(Ordering::SeqCst), 1);
 }
@@ -112,7 +112,7 @@ async fn ip_literal_endpoint_connects_by_address() {
     let channel = lightwallet_transport_nym::channel(&endpoint, proxy.addr)
         .await
         .unwrap();
-    let indexer = CanonicalIndexer::new(channel, params());
+    let indexer = CanonicalIndexerClient::new(channel, params());
     assert_eq!(indexer.get_latest_height().await.unwrap(), 100);
 
     let connects = proxy.connects.lock().unwrap();
@@ -133,7 +133,7 @@ async fn ipv6_literal_reaches_the_proxy_as_a_domain() {
     let channel = lightwallet_transport_nym::channel(&endpoint, proxy.addr)
         .await
         .unwrap();
-    let indexer = CanonicalIndexer::new(channel, params());
+    let indexer = CanonicalIndexerClient::new(channel, params());
     assert_eq!(indexer.get_latest_height().await.unwrap(), 100);
 
     // The brackets survive `Uri::host()` and fail tokio-socks' IpAddr parse,

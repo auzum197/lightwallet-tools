@@ -12,7 +12,7 @@ mapping, no ports and no child processes.
 ```rust
 let mock = canonical::MockStreamer::new().with_blocks(canonical::linked_blocks(100, 50));
 let handle = mock.clone(); // keep for post-hoc assertions
-let indexer = CanonicalIndexer::new(canonical::serve(mock).await, params);
+let indexer = CanonicalIndexerClient::new(canonical::serve(mock).await, params);
 ```
 
 Fault injection is endpoint-level: `with_fault(rpc, status)` fails one RPC

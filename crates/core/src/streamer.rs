@@ -1,8 +1,8 @@
 //! The wire RPCs that both variants share but that don't belong on the generic
-//! `TestnetIndexer` trait (see `indexer.rs`). They return each variant's own
+//! `IndexerClient` trait (see `indexer.rs`). They return each variant's own
 //! generated message types, so they can't be generic without an associated type
 //! per return message. Instead one macro emits identical inherent methods on
-//! both `CanonicalIndexer` and `CrosslinkIndexer`, keeping the two surfaces from
+//! both `CanonicalIndexerClient` and `CrosslinkIndexerClient`, keeping the two surfaces from
 //! drifting. The overlay is purely additive to canonical, so the bodies really
 //! are byte-for-byte the same modulo the proto crate path.
 //!

@@ -4,7 +4,7 @@
 //!
 //! ```no_run
 //! use arti_client::{TorClient, TorClientConfig};
-//! use lightwallet_core::{CanonicalIdentityClient, CanonicalIndexer, NetworkParams};
+//! use lightwallet_core::{CanonicalIdentityClient, CanonicalIndexerClient, NetworkParams};
 //! use std::sync::Arc;
 //! use tonic::transport::{ClientTlsConfig, Endpoint};
 //!
@@ -18,7 +18,7 @@
 //! let tor = Arc::new(TorClient::create_bootstrapped(TorClientConfig::default()).await?);
 //! let endpoint = Endpoint::from_static("https://zec.rocks:443")
 //!     .tls_config(ClientTlsConfig::new().with_webpki_roots())?;
-//! let indexer = CanonicalIndexer::new(
+//! let client = CanonicalIndexerClient::new(
 //!     lightwallet_transport_tor::channel(&endpoint, &tor).await?,
 //!     params,
 //! );
@@ -61,7 +61,7 @@ pub async fn channel<R: Runtime>(
 }
 
 /// Like [`channel`], but the connection is only opened on first use. Lets a
-/// wallet construct its indexer while the Tor client is still bootstrapping,
+/// wallet construct its indexer client while the Tor client is still bootstrapping,
 /// and keeps an identity client's circuit unbuilt until its first RPC.
 pub fn channel_lazy<R: Runtime>(endpoint: &Endpoint, tor: &Arc<TorClient<R>>) -> Channel {
     channel_lazy_with_isolation(endpoint, tor, IsolationToken::new())

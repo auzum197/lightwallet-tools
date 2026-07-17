@@ -2,7 +2,7 @@ use crate::error::wrap_stream;
 use crate::identity::impl_identity_methods;
 use crate::streamer::impl_streamer_methods;
 use crate::transport::GrpcTransport;
-use crate::{CompactBlockHeader, NetworkParams, Result, TestnetIndexer};
+use crate::{CompactBlockHeader, NetworkParams, Result, IndexerClient};
 use futures_util::stream::BoxStream;
 use lightwallet_proto_crosslink as proto;
 use lightwallet_proto_crosslink::compact_tx_streamer_client::CompactTxStreamerClient;
@@ -24,13 +24,13 @@ impl CompactBlockHeader for CompactBlock {
 }
 
 /// Indexer for the CROSSLINK variant.
-pub struct CrosslinkIndexer<T> {
+pub struct CrosslinkIndexerClient<T> {
     client: CompactTxStreamerClient<T>,
     params: NetworkParams,
 }
 
-impl<T: GrpcTransport> CrosslinkIndexer<T> {
-    /// Wrap `transport` as a CROSSLINK indexer carrying `params`.
+impl<T: GrpcTransport> CrosslinkIndexerClient<T> {
+    /// Wrap `transport` as a Crosslink indexer client carrying `params`.
     pub fn new(transport: T, params: NetworkParams) -> Self {
         Self {
             client: CompactTxStreamerClient::new(transport),
@@ -39,7 +39,7 @@ impl<T: GrpcTransport> CrosslinkIndexer<T> {
     }
 
     /// CROSSLINK-only bond delegation lookup. Written against the concrete
-    /// indexer, not the shared trait: variant surface stays concrete so no
+    /// indexer client, not the shared trait: variant surface stays concrete so no
     /// consumer unwraps an `Option` for a capability its backend can't have.
     pub async fn get_bond_info(&self, bond_key: Vec<u8>) -> Result<BondInfoResponse> {
         let mut client = self.client.clone();
@@ -57,7 +57,7 @@ impl<T: GrpcTransport> CrosslinkIndexer<T> {
     }
 }
 
-impl_streamer_methods!(CrosslinkIndexer, proto);
+impl_streamer_methods!(CrosslinkIndexerClient, proto);
 
 /// One unlinkability domain on the CROSSLINK variant: the identity-bearing
 /// RPCs, over a transport of their own. Mint one per identity the wallet
@@ -78,7 +78,7 @@ impl<T: GrpcTransport> CrosslinkIdentityClient<T> {
 
     /// CROSSLINK-only, featurenet: ask the faucet to fund `address` (an
     /// orchard-containing unified address). Lives here rather than on the
-    /// indexer because the request names the wallet's own address.
+    /// indexer client because the request names the wallet's own address.
     pub async fn request_faucet_donation(&self, address: String) -> Result<FaucetResponse> {
         let mut client = self.client.clone();
         let donation = client
@@ -91,7 +91,7 @@ impl<T: GrpcTransport> CrosslinkIdentityClient<T> {
 
 impl_identity_methods!(CrosslinkIdentityClient, proto);
 
-impl<T: GrpcTransport> TestnetIndexer for CrosslinkIndexer<T> {
+impl<T: GrpcTransport> IndexerClient for CrosslinkIndexerClient<T> {
     type Block = CompactBlock;
     type TreeState = TreeState;
 

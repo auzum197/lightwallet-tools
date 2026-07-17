@@ -7,20 +7,20 @@
 //! info, faucet). There is no shared normalized block type: each variant
 //! keeps its generated types, and genericity comes from the narrow
 //! [`CompactBlockHeader`] capability plus associated types on
-//! [`TestnetIndexer`].
+//! [`IndexerClient`].
 //!
 //! # API layout
 //!
 //! The wire surface splits three ways:
 //!
-//! - [`TestnetIndexer`] carries the block-sync path (latest height, block
+//! - [`IndexerClient`] carries the block-sync path (latest height, block
 //!   fetch, block ranges, tree state), the one place consumers are genuinely
 //!   variant-agnostic.
 //! - The rest of the chain-wide surface (mempool stream, subtree roots,
 //!   server info) exists as identical inherent methods on
-//!   [`CanonicalIndexer`] and [`CrosslinkIndexer`], returning each variant's
+//!   [`CanonicalIndexerClient`] and [`CrosslinkIndexerClient`], returning each variant's
 //!   own generated types. Variant-only RPCs are inherent methods on
-//!   [`CrosslinkIndexer`] alone, never an `Option` on something shared.
+//!   [`CrosslinkIndexerClient`] alone, never an `Option` on something shared.
 //! - RPCs whose request content names a wallet-specific identifier (a txid,
 //!   a transparent address, held transactions) live on
 //!   [`CanonicalIdentityClient`] and [`CrosslinkIdentityClient`], each built
@@ -41,7 +41,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use lightwallet_core::{CanonicalIndexer, NetworkParams, TestnetIndexer};
+//! use lightwallet_core::{CanonicalIndexerClient, NetworkParams, IndexerClient};
 //! use tonic::transport::Endpoint;
 //!
 //! # #[tokio::main(flavor = "current_thread")]
@@ -54,17 +54,17 @@
 //!     activation_heights: Default::default(),
 //!     consensus_branch_id: 0,
 //! };
-//! let indexer = CanonicalIndexer::new(channel, params);
-//! let tip = indexer.get_latest_height().await?;
+//! let client = CanonicalIndexerClient::new(channel, params);
+//! let tip = client.get_latest_height().await?;
 //! # Ok(())
 //! # }
 //! ```
 //!
 //! # Features
 //!
-//! - `canonical` (default): [`CanonicalIndexer`] and
+//! - `canonical` (default): [`CanonicalIndexerClient`] and
 //!   [`CanonicalIdentityClient`], over `lightwallet-proto-canonical`.
-//! - `crosslink`: [`CrosslinkIndexer`] and [`CrosslinkIdentityClient`], over
+//! - `crosslink`: [`CrosslinkIndexerClient`] and [`CrosslinkIdentityClient`], over
 //!   `lightwallet-proto-crosslink`.
 //!
 //! The features are additive. A build with neither still exposes the traits,
@@ -82,19 +82,19 @@ mod transport;
 
 pub use error::{Error, Result};
 pub use header::{CompactBlockHeader, HashLen};
-pub use indexer::{TestnetIndexer, assert_continuity};
+pub use indexer::{IndexerClient, assert_continuity};
 pub use params::NetworkParams;
 pub use transport::GrpcTransport;
 
 #[cfg(feature = "canonical")]
 mod canonical;
 #[cfg(feature = "canonical")]
-pub use canonical::{CanonicalIdentityClient, CanonicalIndexer};
+pub use canonical::{CanonicalIdentityClient, CanonicalIndexerClient};
 
 #[cfg(feature = "crosslink")]
 mod crosslink;
 #[cfg(feature = "crosslink")]
-pub use crosslink::{CrosslinkIdentityClient, CrosslinkIndexer};
+pub use crosslink::{CrosslinkIdentityClient, CrosslinkIndexerClient};
 
 // The same generic function runs against both variants' block types with no
 // conversion and no shared struct, exercised here at the type level.
@@ -115,7 +115,7 @@ mod tests {
             prev_hash: vec![7u8; 32],
             ..Default::default()
         };
-        assert!(assert_continuity::<CanonicalIndexer<Channel>>(&a, &b));
+        assert!(assert_continuity::<CanonicalIndexerClient<Channel>>(&a, &b));
 
         let c = lightwallet_proto_crosslink::CompactBlock {
             height: 100,
@@ -127,7 +127,7 @@ mod tests {
             prev_hash: vec![9u8; 32],
             ..Default::default()
         };
-        assert!(assert_continuity::<CrosslinkIndexer<Channel>>(&c, &d));
+        assert!(assert_continuity::<CrosslinkIndexerClient<Channel>>(&c, &d));
     }
 
     // The macros are supposed to give both variants the same inherent surface
@@ -136,20 +136,20 @@ mod tests {
     #[test]
     fn both_variants_expose_the_full_shared_surface() {
         let _ = (
-            CanonicalIndexer::<Channel>::get_latest_height,
-            CanonicalIndexer::<Channel>::get_mempool_stream,
-            CanonicalIndexer::<Channel>::get_lightd_info,
-            CanonicalIndexer::<Channel>::ping,
+            CanonicalIndexerClient::<Channel>::get_latest_height,
+            CanonicalIndexerClient::<Channel>::get_mempool_stream,
+            CanonicalIndexerClient::<Channel>::get_lightd_info,
+            CanonicalIndexerClient::<Channel>::ping,
         );
         let _ = (
-            CrosslinkIndexer::<Channel>::get_latest_height,
-            CrosslinkIndexer::<Channel>::get_mempool_stream,
-            CrosslinkIndexer::<Channel>::get_lightd_info,
-            CrosslinkIndexer::<Channel>::ping,
+            CrosslinkIndexerClient::<Channel>::get_latest_height,
+            CrosslinkIndexerClient::<Channel>::get_mempool_stream,
+            CrosslinkIndexerClient::<Channel>::get_lightd_info,
+            CrosslinkIndexerClient::<Channel>::ping,
             // The Crosslink-only chain-wide surface, concrete and off the
             // shared trait.
-            CrosslinkIndexer::<Channel>::get_bond_info,
-            CrosslinkIndexer::<Channel>::get_roster,
+            CrosslinkIndexerClient::<Channel>::get_bond_info,
+            CrosslinkIndexerClient::<Channel>::get_roster,
         );
         let _ = (
             CanonicalIdentityClient::<Channel>::get_transaction,
@@ -182,7 +182,7 @@ mod tests {
             prev_hash: vec![7u8; 32],
             ..Default::default()
         };
-        assert!(!assert_continuity::<CanonicalIndexer<Channel>>(&a, &b));
+        assert!(!assert_continuity::<CanonicalIndexerClient<Channel>>(&a, &b));
     }
 
     #[test]
@@ -197,7 +197,7 @@ mod tests {
             prev_hash: vec![7u8; 32],
             ..Default::default()
         };
-        assert!(!assert_continuity::<CanonicalIndexer<Channel>>(&a, &b));
+        assert!(!assert_continuity::<CanonicalIndexerClient<Channel>>(&a, &b));
     }
 
     #[test]
@@ -212,7 +212,7 @@ mod tests {
             prev_hash: vec![8u8; 32],
             ..Default::default()
         };
-        assert!(!assert_continuity::<CanonicalIndexer<Channel>>(&a, &b));
+        assert!(!assert_continuity::<CanonicalIndexerClient<Channel>>(&a, &b));
 
         let c = lightwallet_proto_crosslink::CompactBlock {
             height: 100,
@@ -224,7 +224,7 @@ mod tests {
             prev_hash: vec![10u8; 32],
             ..Default::default()
         };
-        assert!(!assert_continuity::<CrosslinkIndexer<Channel>>(&c, &d));
+        assert!(!assert_continuity::<CrosslinkIndexerClient<Channel>>(&c, &d));
     }
 
     #[test]

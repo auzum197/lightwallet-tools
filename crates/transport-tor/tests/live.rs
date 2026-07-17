@@ -5,7 +5,7 @@
 //! Arti state and cache live under the OS temp dir so repeat runs reuse the
 //! downloaded directory info without touching the user's arti install.
 
-use lightwallet_core::{CanonicalIndexer, CompactBlockHeader, NetworkParams, TestnetIndexer};
+use lightwallet_core::{CanonicalIndexerClient, CompactBlockHeader, NetworkParams, IndexerClient};
 use std::collections::BTreeMap;
 use tonic::transport::{ClientTlsConfig, Endpoint};
 
@@ -34,7 +34,7 @@ async fn canonical_indexer_over_tor() {
         .await
         .expect("tor channel");
 
-    let indexer = CanonicalIndexer::new(
+    let indexer = CanonicalIndexerClient::new(
         channel,
         NetworkParams {
             chain_name: "live".into(),

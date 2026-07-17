@@ -3,7 +3,7 @@
 //! that changes (nym-plan.md, shape A):
 //!
 //! ```no_run
-//! use lightwallet_core::{CanonicalIndexer, NetworkParams};
+//! use lightwallet_core::{CanonicalIndexerClient, NetworkParams};
 //! use std::net::SocketAddr;
 //! use tonic::transport::{ClientTlsConfig, Endpoint};
 //!
@@ -17,7 +17,7 @@
 //! let socks: SocketAddr = "127.0.0.1:1080".parse()?; // a running nym-socks5-client
 //! let endpoint = Endpoint::from_static("https://zec.rocks:443")
 //!     .tls_config(ClientTlsConfig::new().with_webpki_roots())?;
-//! let indexer = CanonicalIndexer::new(
+//! let client = CanonicalIndexerClient::new(
 //!     lightwallet_transport_nym::channel(&endpoint, socks).await?,
 //!     params,
 //! );
@@ -50,7 +50,7 @@ pub async fn channel(
 }
 
 /// Like [`channel`], but the connection is only opened on first use. Lets a
-/// wallet construct its indexer before the SOCKS5 client is reachable.
+/// wallet construct its indexer client before the SOCKS5 client is reachable.
 pub fn channel_lazy(endpoint: &Endpoint, socks: SocketAddr) -> Channel {
     endpoint.connect_with_connector_lazy(connector(socks))
 }

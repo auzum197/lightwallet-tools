@@ -14,7 +14,7 @@
 
 use futures_util::StreamExt;
 use lightwallet_core::{
-    CanonicalIndexer, CompactBlockHeader, CrosslinkIndexer, NetworkParams, TestnetIndexer,
+    CanonicalIndexerClient, CompactBlockHeader, CrosslinkIndexerClient, NetworkParams, IndexerClient,
     assert_continuity,
 };
 use std::collections::BTreeMap;
@@ -45,7 +45,7 @@ async fn connect(url: &str) -> Channel {
 /// generic sync loop that drives the mocks walks a live tip window, checking
 /// hash-chain continuity and 32-byte hashes, then fetches tree state through
 /// the trait's opaque associated type.
-async fn scan_live_tip<I: TestnetIndexer>(indexer: &I, window: u64) {
+async fn scan_live_tip<I: IndexerClient>(indexer: &I, window: u64) {
     let tip = indexer.get_latest_height().await.expect("latest height");
     assert!(tip > 0, "live chain reports an empty best chain");
     let start = tip.saturating_sub(window - 1);
@@ -87,7 +87,7 @@ async fn scan_live_tip<I: TestnetIndexer>(indexer: &I, window: u64) {
 async fn canonical_indexer_against_a_live_endpoint() {
     let url = std::env::var("LIGHTWALLET_CANONICAL_URL")
         .unwrap_or_else(|_| "https://zec.rocks:443".into());
-    let indexer = CanonicalIndexer::new(connect(&url).await, params("live"));
+    let indexer = CanonicalIndexerClient::new(connect(&url).await, params("live"));
 
     let info = indexer.get_lightd_info().await.expect("lightd info");
     assert!(
@@ -111,7 +111,7 @@ async fn crosslink_indexer_against_a_live_featurenet() {
         eprintln!("LIGHTWALLET_CROSSLINK_URL unset, skipping (featurenets reset each season)");
         return;
     };
-    let indexer = CrosslinkIndexer::new(connect(&url).await, params("featurenet"));
+    let indexer = CrosslinkIndexerClient::new(connect(&url).await, params("featurenet"));
 
     let info = indexer.get_lightd_info().await.expect("lightd info");
     assert!(!info.chain_name.is_empty());

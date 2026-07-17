@@ -11,8 +11,8 @@ use clap_complete::Shell;
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
 use lightwallet_core::{
-    CanonicalIdentityClient, CanonicalIndexer, CrosslinkIdentityClient, CrosslinkIndexer,
-    NetworkParams, TestnetIndexer,
+    CanonicalIdentityClient, CanonicalIndexerClient, CrosslinkIdentityClient, CrosslinkIndexerClient,
+    NetworkParams, IndexerClient,
 };
 use render::{OutputMode, Renderer};
 use std::io::Read;
@@ -224,7 +224,7 @@ impl Cmd {
     }
 }
 
-/// Run `$body` against whichever concrete indexer `$variant` selects, with
+/// Run `$body` against whichever concrete indexer client `$variant` selects, with
 /// `$proto` bound to that variant's generated crate. The same trick as core's
 /// `impl_streamer_methods!`: the shared surface is identical modulo the proto
 /// path, so one body serves both.
@@ -234,13 +234,13 @@ macro_rules! dispatch {
             Variant::Canonical => {
                 #[allow(unused_imports)]
                 use lightwallet_proto_canonical as $proto;
-                let $ix = CanonicalIndexer::new($channel, cli_params());
+                let $ix = CanonicalIndexerClient::new($channel, cli_params());
                 $body
             }
             Variant::Crosslink => {
                 #[allow(unused_imports)]
                 use lightwallet_proto_crosslink as $proto;
-                let $ix = CrosslinkIndexer::new($channel, cli_params());
+                let $ix = CrosslinkIndexerClient::new($channel, cli_params());
                 $body
             }
         }
@@ -461,13 +461,13 @@ async fn main() -> Result<()> {
             })
         }
         Cmd::GetRoster => {
-            let ix = CrosslinkIndexer::new(channel, cli_params());
+            let ix = CrosslinkIndexerClient::new(channel, cli_params());
             let roster = ix.get_roster().await.map_err(rpc_err)?;
             renderer.unary(&roster, "Bytes")
         }
         Cmd::GetBondInfo { bond_key } => {
             let bond_key = hex::decode(&bond_key).context("bond key is not valid hex")?;
-            let ix = CrosslinkIndexer::new(channel, cli_params());
+            let ix = CrosslinkIndexerClient::new(channel, cli_params());
             let info = ix.get_bond_info(bond_key).await.map_err(rpc_err)?;
             renderer.unary(&info, "BondInfoResponse")
         }

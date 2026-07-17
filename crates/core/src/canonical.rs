@@ -2,7 +2,7 @@ use crate::error::wrap_stream;
 use crate::identity::impl_identity_methods;
 use crate::streamer::impl_streamer_methods;
 use crate::transport::GrpcTransport;
-use crate::{CompactBlockHeader, NetworkParams, Result, TestnetIndexer};
+use crate::{CompactBlockHeader, NetworkParams, Result, IndexerClient};
 use futures_util::stream::BoxStream;
 use lightwallet_proto_canonical as proto;
 use lightwallet_proto_canonical::compact_tx_streamer_client::CompactTxStreamerClient;
@@ -21,13 +21,13 @@ impl CompactBlockHeader for CompactBlock {
 }
 
 /// Indexer for the CANONICAL variant.
-pub struct CanonicalIndexer<T> {
+pub struct CanonicalIndexerClient<T> {
     client: CompactTxStreamerClient<T>,
     params: NetworkParams,
 }
 
-impl<T: GrpcTransport> CanonicalIndexer<T> {
-    /// Wrap `transport` as a CANONICAL indexer carrying `params`.
+impl<T: GrpcTransport> CanonicalIndexerClient<T> {
+    /// Wrap `transport` as a Canonical indexer client carrying `params`.
     pub fn new(transport: T, params: NetworkParams) -> Self {
         Self {
             client: CompactTxStreamerClient::new(transport),
@@ -36,7 +36,7 @@ impl<T: GrpcTransport> CanonicalIndexer<T> {
     }
 }
 
-impl_streamer_methods!(CanonicalIndexer, proto);
+impl_streamer_methods!(CanonicalIndexerClient, proto);
 
 /// One unlinkability domain on the CANONICAL variant: the identity-bearing
 /// RPCs, over a transport of their own. Mint one per identity the wallet
@@ -58,7 +58,7 @@ impl<T: GrpcTransport> CanonicalIdentityClient<T> {
 
 impl_identity_methods!(CanonicalIdentityClient, proto);
 
-impl<T: GrpcTransport> TestnetIndexer for CanonicalIndexer<T> {
+impl<T: GrpcTransport> IndexerClient for CanonicalIndexerClient<T> {
     type Block = CompactBlock;
     type TreeState = TreeState;
 
