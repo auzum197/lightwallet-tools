@@ -1,10 +1,10 @@
 # lwcli: one-shot gRPC client for the lightwallet indexers
 
-high-level.md names a "debug client" among the downstream consumers of the
+CONTEXT.md names a "debug client" among the downstream consumers of the
 protocol layer. This is it: `lwcli`, a clap binary in `crates/cli`
 (crate `lightwallet-cli`) that issues a single RPC against a variant's
 endpoint and prints the response. grpcurl-like in spirit, but typed: each RPC
-is a subcommand calling `CanonicalIndexer`/`CrosslinkIndexer` from
+is a subcommand calling `CanonicalIndexerClient`/`CrosslinkIndexerClient` from
 `lightwallet-core`, so the CLI doubles as a dogfooding consumer of the crate's
 public API.
 
@@ -43,7 +43,7 @@ CLI change is flag surface plus the connect path.
 - `--transport <direct|tor|nym>`, default `direct`. The flag name is the
   CONTEXT.md glossary term. `tor` runs arti in-process, `nym` dials a running
   `nym-socks5-client` and is marked experimental in help until it clears the
-  promotion gate (high-level.md milestone 5). An in-process Nym client that
+  promotion gate (CONTEXT.md). An in-process Nym client that
   would drop the external binary is sketched in nym-embedded-plan.md.
 - Tor bootstraps with arti's default config, so the directory cache persists
   in the platform state dir and later runs are fast. One `bootstrapping

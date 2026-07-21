@@ -1,7 +1,6 @@
 # Zcash Multi-Variant Lightwallet Protocol Layer
 
-See `high-level.md` for the implementation plan (proto sourcing → codegen →
-`lwp-core`). Run `just` to list the repo's check/maintenance recipes.
+Run `just` to list the repo's check/maintenance recipes.
 
 ## Tooling
 

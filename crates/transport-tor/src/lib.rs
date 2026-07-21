@@ -1,6 +1,6 @@
 //! Tor transport for the lightwallet indexers: an arti-backed connector that
 //! still yields a plain tonic `Channel`, so construction is the only thing
-//! that changes (§4 of high-level.md):
+//! that changes:
 //!
 //! ```no_run
 //! use arti_client::{TorClient, TorClientConfig};

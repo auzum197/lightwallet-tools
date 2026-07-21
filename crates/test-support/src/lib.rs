@@ -1,4 +1,4 @@
-//! In-memory mock indexer endpoints for both variants (§5 of high-level.md).
+//! In-memory mock indexer endpoints for both variants.
 //!
 //! Each variant module implements its generated `CompactTxStreamer` server
 //! trait and serves it over a tokio duplex pipe: real prost encode/decode,

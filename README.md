@@ -57,5 +57,5 @@ just coverage    # llvm-cov over the offline suite
 ```
 
 The mock suite proves self-consistency (both ends share the generated
-types). The live suite is the conformance check. Implementation status and
-the load-bearing decisions live in [high-level.md](high-level.md).
+types). The live suite is the conformance check. The load-bearing decisions
+live in [docs/adr/](docs/adr/).
