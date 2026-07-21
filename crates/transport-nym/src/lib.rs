@@ -1,6 +1,6 @@
 //! Nym mixnet transport for the lightwallet indexers: a SOCKS5 connector that
 //! still yields a plain tonic `Channel`, so construction is the only thing
-//! that changes (nym-plan.md, shape A):
+//! that changes:
 //!
 //! ```no_run
 //! use lightwallet_core::{CanonicalIndexerClient, NetworkParams};

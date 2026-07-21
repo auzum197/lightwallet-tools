@@ -28,5 +28,4 @@ pipe, so `lwcli ... | head` works mid-stream.
 
 The `tor` and `nym` cargo features are default-on and cut the corresponding
 `--transport` values when disabled (arti roughly doubles the build, so
-`--no-default-features` gives a lean direct-only binary). Design decisions
-are recorded in `cli-plan.md` at the workspace root.
+`--no-default-features` gives a lean direct-only binary).

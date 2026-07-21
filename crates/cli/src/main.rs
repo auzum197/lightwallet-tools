@@ -1,7 +1,6 @@
 //! `lwcli`: a one-shot gRPC client for Zcash lightwallet indexers. Each RPC is
 //! a typed subcommand calling the `lightwallet-core` indexers, so this binary
-//! also dogfoods the crate's public API. Design decisions live in cli-plan.md
-//! at the repo root.
+//! also dogfoods the crate's public API.
 
 mod render;
 

@@ -8,9 +8,9 @@
 //! defaulting to zec.rocks.
 //!
 //! The test prints the wall-clock time for the block-range sync. That number,
-//! not the assertions, is the promotion gate from nym-plan.md: the mixnet is
-//! 5-hop with cover traffic, and the crate only graduates from experiment to
-//! promised transport if the sync rate holds up against the §3.6 bar.
+//! not the assertions, is the promotion gate: the mixnet is 5-hop with cover
+//! traffic, and the crate only graduates from experiment to promised
+//! transport if the sync rate holds up against the milestone 3.6 bar.
 
 use futures_util::StreamExt;
 use lightwallet_core::{

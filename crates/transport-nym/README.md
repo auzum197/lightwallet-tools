@@ -22,4 +22,4 @@ This crate does not embed a Nym client or handle bandwidth credentials.
 Running and funding the `nym-socks5-client` is the operator's setup.
 
 Status: experimental until mixnet sync throughput clears the promotion gate
-(`just live-check-nym`, criteria in `nym-plan.md` at the workspace root).
+(`just live-check-nym`, criteria in CONTEXT.md at the workspace root).

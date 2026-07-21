@@ -39,8 +39,8 @@ live-check:
 
 # Nym live run: the generic sync loop through a running nym-socks5-client.
 # Export LIGHTWALLET_NYM_SOCKS5_ADDR (e.g. 127.0.0.1:1080); the test skips
-# when it is unset. Prints the sync wall-clock, the promotion gate from
-# nym-plan.md.
+# when it is unset. Prints the sync wall-clock, the promotion gate's
+# measurement (CONTEXT.md).
 live-check-nym:
     cargo nextest run -p lightwallet-transport-nym --run-ignored ignored-only --no-capture
 
