@@ -5,7 +5,7 @@
 //! Arti state and cache live under the OS temp dir so repeat runs reuse the
 //! downloaded directory info without touching the user's arti install.
 
-use lightwallet_core::{CanonicalIndexerClient, CompactBlockHeader, NetworkParams, IndexerClient};
+use lightwallet_core::{CanonicalIndexerClient, CompactBlockHeader, IndexerClient, NetworkParams};
 use std::collections::BTreeMap;
 use tonic::transport::{ClientTlsConfig, Endpoint};
 

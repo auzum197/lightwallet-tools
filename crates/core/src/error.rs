@@ -1,10 +1,15 @@
 use crate::header::HashLen;
 use std::fmt;
 
-/// Everything a `lightwallet-core` call can fail with. `tonic` is a private
-/// dependency: consumers match on this type, not on gRPC internals. The
-/// underlying `tonic::Status` is still reachable through [`Error::code`] for
-/// retry classification, or `std::error::Error::source` for the full detail.
+/// Everything a `lightwallet-core` call can fail with. Most calls fail only
+/// with [`Error::Rpc`]. [`Error::Info`] comes from `discover_params` when a
+/// server's `GetLightdInfo` carries a field this crate cannot parse.
+/// [`Error::HashLen`] is never produced by the crate's own calls; it exists so
+/// a consumer sync loop that checks typed hashes can `?` a `block_hash()`
+/// failure into this type. The underlying `tonic::Status` is reachable through
+/// [`Error::code`] for retry classification, or `std::error::Error::source`
+/// for the full detail, and the crate re-exports tonic so naming those types
+/// needs no dependency of your own.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
@@ -12,7 +17,31 @@ pub enum Error {
     Rpc(tonic::Status),
     /// A block-hash field on the wire was not 32 bytes.
     HashLen(HashLen),
+    /// A `GetLightdInfo` field could not be parsed into `NetworkParams`.
+    Info(MalformedInfo),
 }
+
+/// A `GetLightdInfo` field that did not parse when building `NetworkParams`,
+/// currently only the consensus branch id, which arrives as a hex string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MalformedInfo {
+    /// The wire field name, e.g. `"consensusBranchId"`.
+    pub field: &'static str,
+    /// The value that failed to parse.
+    pub value: String,
+}
+
+impl fmt::Display for MalformedInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "lightd info field {} could not be parsed: {:?}",
+            self.field, self.value
+        )
+    }
+}
+
+impl std::error::Error for MalformedInfo {}
 
 /// Shorthand for `std::result::Result<T, lightwallet_core::Error>`, used by
 /// every fallible call and stream item in this crate.
@@ -24,12 +53,14 @@ impl Error {
     pub fn code(&self) -> Option<tonic::Code> {
         match self {
             Error::Rpc(status) => Some(status.code()),
-            Error::HashLen(_) => None,
+            Error::HashLen(_) | Error::Info(_) => None,
         }
     }
 
     /// Whether retrying the same call could plausibly succeed. A transport
-    /// hiccup is worth another attempt; a rejected argument is not.
+    /// hiccup is worth another attempt; a rejected argument is not. This is
+    /// a conservative floor: a consumer that owns backoff policy may widen
+    /// it (`ResourceExhausted` being the usual candidate).
     pub fn retryable(&self) -> bool {
         matches!(
             self.code(),
@@ -43,6 +74,7 @@ impl fmt::Display for Error {
         match self {
             Error::Rpc(status) => write!(f, "indexer rpc failed: {status}"),
             Error::HashLen(e) => e.fmt(f),
+            Error::Info(e) => e.fmt(f),
         }
     }
 }
@@ -52,6 +84,7 @@ impl std::error::Error for Error {
         match self {
             Error::Rpc(status) => Some(status),
             Error::HashLen(e) => Some(e),
+            Error::Info(e) => Some(e),
         }
     }
 }
@@ -65,6 +98,12 @@ impl From<tonic::Status> for Error {
 impl From<HashLen> for Error {
     fn from(e: HashLen) -> Self {
         Error::HashLen(e)
+    }
+}
+
+impl From<MalformedInfo> for Error {
+    fn from(e: MalformedInfo) -> Self {
+        Error::Info(e)
     }
 }
 

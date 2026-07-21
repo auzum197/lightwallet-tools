@@ -4,7 +4,9 @@
 //!
 //! ```no_run
 //! use arti_client::{TorClient, TorClientConfig};
-//! use lightwallet_core::{CanonicalIdentityClient, CanonicalIndexerClient, NetworkParams};
+//! use lightwallet_core::{
+//!     CanonicalIdentityClient, CanonicalIndexerClient, IdentityTransport, NetworkParams,
+//! };
 //! use std::sync::Arc;
 //! use tonic::transport::{ClientTlsConfig, Endpoint};
 //!
@@ -25,9 +27,9 @@
 //! // Identity-bearing RPCs ride an identity client with a channel of its
 //! // own, so its own circuits. The lazy form builds no circuit until the
 //! // first RPC fires.
-//! let broadcast = CanonicalIdentityClient::new(
+//! let broadcast = CanonicalIdentityClient::new(IdentityTransport::dedicated(
 //!     lightwallet_transport_tor::channel_lazy(&endpoint, &tor),
-//! );
+//! ));
 //! # Ok(())
 //! # }
 //! ```

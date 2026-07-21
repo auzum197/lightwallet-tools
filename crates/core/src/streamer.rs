@@ -10,8 +10,8 @@
 //! wallet-specific identifier is in `identity.rs`, on the identity clients,
 //! so it cannot ride the sync channel (docs/adr/0001).
 //!
-//! Errors surface as [`crate::Error`] and streams as `BoxStream`, so tonic stays
-//! out of the public signatures here just as it does on the trait.
+//! Errors surface as [`crate::Error`] and streams as `BoxStream`, keeping the
+//! generated clients and tonic's `Streaming` type behind these signatures.
 
 /// Emit the shared `CompactTxStreamer` surface as inherent methods on `$indexer`,
 /// with all message types resolved through the `$proto` crate. `$indexer` must
@@ -19,8 +19,51 @@
 macro_rules! impl_streamer_methods {
     ($indexer:ident, $proto:ident) => {
         impl<T: $crate::transport::GrpcTransport> $indexer<T> {
-            /// Deprecated upstream: use `get_block_range` with `poolTypes` instead.
-            #[deprecated = "use get_block_range with poolTypes"]
+            /// Height and hash of the block at the tip of the best chain, as
+            /// the wire reports them. The trait's `get_latest_height` keeps
+            /// only the height.
+            pub async fn get_latest_block(&self) -> $crate::error::Result<$proto::BlockId> {
+                let mut client = self.client.clone();
+                Ok(client
+                    .get_latest_block($proto::ChainSpec {})
+                    .await?
+                    .into_inner())
+            }
+
+            /// Consecutive blocks in `[start, end]` pruned to the given
+            /// pools. Empty `pool_types` is the legacy behavior (shielded
+            /// data only, same as the trait's `get_block_range`). The
+            /// protocol requires checking, via `get_lightd_info`, that the
+            /// server can prune before sending a non-empty list.
+            pub async fn get_block_range_pools(
+                &self,
+                start: u64,
+                end: u64,
+                pool_types: Vec<$proto::PoolType>,
+            ) -> $crate::error::Result<
+                futures_util::stream::BoxStream<
+                    'static,
+                    $crate::error::Result<$proto::CompactBlock>,
+                >,
+            > {
+                let mut client = self.client.clone();
+                let range = $proto::BlockRange {
+                    start: Some($proto::BlockId {
+                        height: start,
+                        hash: Vec::new(),
+                    }),
+                    end: Some($proto::BlockId {
+                        height: end,
+                        hash: Vec::new(),
+                    }),
+                    pool_types: pool_types.into_iter().map(|pool| pool as i32).collect(),
+                };
+                let stream = client.get_block_range(range).await?.into_inner();
+                Ok($crate::error::wrap_stream(stream))
+            }
+
+            /// Deprecated upstream: superseded by `get_block_range_pools`.
+            #[deprecated = "use get_block_range_pools"]
             #[allow(deprecated)]
             pub async fn get_block_nullifiers(
                 &self,
@@ -36,8 +79,8 @@ macro_rules! impl_streamer_methods {
                     .into_inner())
             }
 
-            /// Deprecated upstream: use `get_block_range` with `poolTypes` instead.
-            #[deprecated = "use get_block_range with poolTypes"]
+            /// Deprecated upstream: superseded by `get_block_range_pools`.
+            #[deprecated = "use get_block_range_pools"]
             #[allow(deprecated)]
             pub async fn get_block_range_nullifiers(
                 &self,
@@ -94,6 +137,17 @@ macro_rules! impl_streamer_methods {
             pub async fn get_lightd_info(&self) -> $crate::error::Result<$proto::LightdInfo> {
                 let mut client = self.client.clone();
                 Ok(client.get_lightd_info($proto::Empty {}).await?.into_inner())
+            }
+
+            /// Fetch `GetLightdInfo` and build [`NetworkParams`] from it: chain
+            /// name, consensus branch id, and the activation heights the info
+            /// carries (Sapling, plus the next pending upgrade). The bootstrap
+            /// for a deployment whose branch id and heights are not known ahead
+            /// of time, a featurenet especially. Errors if the branch id is not
+            /// valid hex.
+            pub async fn discover_params(&self) -> $crate::error::Result<$crate::NetworkParams> {
+                let info = self.get_lightd_info().await?;
+                $crate::NetworkParams::from_lightd_info(&info)
             }
 
             /// Testing-only latency probe. Requires the server's insecure ping flag.

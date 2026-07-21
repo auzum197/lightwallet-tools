@@ -23,10 +23,10 @@ of this repository.
 
 ### Example: YourProject
 We assume YourProject is a git repository. Begin with a clean working tree.
-(Pulling in lightwallet-protocol creates its own commit;
-any changes you're making to your project should be in separate commits.)
+(Pulling in lightwallet-protocol creates its own commit. Any changes
+you're making to your project should be in separate commits.)
 
-You can install the `tree` command using your OS package manager of choice (although is not necessary).
+You can install the `tree` command using your OS package manager of choice, though it isn't necessary.
 (Replace the version tag with the appropriate one, usually the latest.)
 ```
 $ cd YourProject

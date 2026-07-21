@@ -1,0 +1,33 @@
+[package]
+name = "darkside-chain"
+description = "Deterministic Zcash chain state machine for the darkside: no network, no clock, no I/O"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+zcash_protocol.workspace = true
+zcash_primitives.workspace = true
+zcash_keys.workspace = true
+zcash_address.workspace = true
+zcash_transparent.workspace = true
+sapling-crypto.workspace = true
+orchard.workspace = true
+zcash_note_encryption.workspace = true
+incrementalmerkletree.workspace = true
+shardtree.workspace = true
+zcash_encoding.workspace = true
+zip32.workspace = true
+bls12_381.workspace = true
+pasta_curves.workspace = true
+redjubjub.workspace = true
+nonempty.workspace = true
+ff.workspace = true
+hex.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+blake2b_simd.workspace = true

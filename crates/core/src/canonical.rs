@@ -1,8 +1,8 @@
 use crate::error::wrap_stream;
-use crate::identity::impl_identity_methods;
+use crate::identity::{impl_identity_ctors, impl_identity_methods};
 use crate::streamer::impl_streamer_methods;
 use crate::transport::GrpcTransport;
-use crate::{CompactBlockHeader, NetworkParams, Result, IndexerClient};
+use crate::{CompactBlockHeader, IndexerClient, NetworkParams, Result};
 use futures_util::stream::BoxStream;
 use lightwallet_proto_canonical as proto;
 use lightwallet_proto_canonical::compact_tx_streamer_client::CompactTxStreamerClient;
@@ -17,6 +17,24 @@ impl CompactBlockHeader for CompactBlock {
     }
     fn prev_hash(&self) -> &[u8] {
         &self.prev_hash
+    }
+}
+
+impl crate::params::LightdInfoView for proto::LightdInfo {
+    fn chain_name(&self) -> &str {
+        &self.chain_name
+    }
+    fn consensus_branch_id_hex(&self) -> &str {
+        &self.consensus_branch_id
+    }
+    fn sapling_activation_height(&self) -> u64 {
+        self.sapling_activation_height
+    }
+    fn pending_upgrade_name(&self) -> &str {
+        &self.upgrade_name
+    }
+    fn pending_upgrade_height(&self) -> u64 {
+        self.upgrade_height
     }
 }
 
@@ -46,16 +64,7 @@ pub struct CanonicalIdentityClient<T> {
     client: CompactTxStreamerClient<T>,
 }
 
-impl<T: GrpcTransport> CanonicalIdentityClient<T> {
-    /// `transport` must not be shared with the sync channel or with another
-    /// identity client, or the domains collapse into one.
-    pub fn new(transport: T) -> Self {
-        Self {
-            client: CompactTxStreamerClient::new(transport),
-        }
-    }
-}
-
+impl_identity_ctors!(CanonicalIdentityClient);
 impl_identity_methods!(CanonicalIdentityClient, proto);
 
 impl<T: GrpcTransport> IndexerClient for CanonicalIndexerClient<T> {

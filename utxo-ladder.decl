@@ -1,0 +1,36 @@
+# A distinct transparent UTXO on alice's t-address every two blocks.
+#
+# The format is literal (§9): there's no loop, so "indefinitely" means a long
+# ladder here plus live mode mining past the declared tip:
+#   darkside serve utxo-ladder.decl --live
+#
+# Amounts increase by one zatoshi per step on purpose. Two funds with the same
+# recipient and value at heights that share a consensus branch assemble to the
+# same bytes, so they collide on txid and only one UTXO survives. Distinct
+# values keep the outpoints distinct, so the UTXO set grows by one every second
+# block.
+
+network regtest
+seed 0xC0FFEE
+activation sapling@1 nu5@1 nu6@1
+
+account alice seed "alice-test-seed"
+
+chain ladder {
+  blocks 0..1
+  fund alice.taddr 100000001 zats at 2
+  fund alice.taddr 100000002 zats at 4
+  fund alice.taddr 100000003 zats at 6
+  fund alice.taddr 100000004 zats at 8
+  fund alice.taddr 100000005 zats at 10
+  fund alice.taddr 100000006 zats at 12
+  fund alice.taddr 100000007 zats at 14
+  fund alice.taddr 100000008 zats at 16
+  fund alice.taddr 100000009 zats at 18
+  fund alice.taddr 100000010 zats at 20
+  fund alice.taddr 100000011 zats at 22
+  fund alice.taddr 100000012 zats at 24
+  fund alice.taddr 100000013 zats at 26
+  fund alice.taddr 100000014 zats at 28
+  fund alice.taddr 100000015 zats at 30
+}

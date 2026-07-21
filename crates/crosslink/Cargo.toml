@@ -2,8 +2,11 @@
 name = "lightwallet-proto-crosslink"
 description = "Generated tonic/prost bindings for the Crosslink variant of the Zcash lightwalletd gRPC protocol"
 readme = "README.md"
+keywords = ["zcash", "lightwalletd", "grpc", "protobuf", "crosslink"]
+categories = ["cryptography::cryptocurrencies", "api-bindings"]
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish.workspace = true
 
 [dependencies]

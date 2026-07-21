@@ -1,7 +1,7 @@
 //! The binary against real gRPC servers on localhost: the test-support mocks
 //! served over TCP instead of their usual duplex pipe, with `lwcli` driven as
 //! a subprocess. Covers JSON rendering, display-order hashes, NDJSON streams,
-//! stdin input, exit codes, and the implied-crosslink rule.
+//! stdin input, exit codes, and the explicit-variant rule.
 
 use lightwallet_proto_canonical::compact_tx_streamer_server::CompactTxStreamerServer as CanonicalServer;
 use lightwallet_proto_crosslink::compact_tx_streamer_server::CompactTxStreamerServer as CrosslinkServer;
@@ -144,11 +144,25 @@ async fn rpc_failure_exits_nonzero_with_the_status() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn crosslink_commands_imply_the_variant() {
+async fn crosslink_commands_require_the_explicit_variant() {
     let mock = crosslink::MockStreamer::new().with_roster(vec![1, 2, 3]);
     let url = serve_crosslink(mock).await;
 
-    let roster = stdout_json(&lwcli(&["--url", &url, "get-roster"]));
+    let output = lwcli(&["--url", &url, "get-roster"]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("only on the crosslink variant"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let roster = stdout_json(&lwcli(&[
+        "--url",
+        &url,
+        "--variant",
+        "crosslink",
+        "get-roster",
+    ]));
     assert_eq!(roster["data"], "010203");
 }
 
@@ -201,26 +215,23 @@ async fn nym_transport_tunnels_through_the_proxy() {
 }
 
 #[cfg(feature = "nym")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn nym_socks5_implies_the_transport() {
-    use lightwallet_test_support::socks5::{REPLY_SUCCEEDED, spawn_socks5};
-
-    let upstream = serve_canonical_addr(
-        canonical::MockStreamer::new().with_blocks(canonical::linked_blocks(100, 3)),
-    )
-    .await;
-    let proxy = spawn_socks5(Some(upstream), REPLY_SUCCEEDED).await;
-
+#[test]
+fn nym_socks5_alone_does_not_select_the_transport() {
+    // The address without an explicit --transport nym is an error, not a
+    // silent switch. The explicit nym path is covered by the tunnel test.
     let output = lwcli(&[
         "--url",
         "http://lightwalletd.test:9067",
         "--nym-socks5",
-        &proxy.addr.to_string(),
+        "127.0.0.1:9060",
         "get-latest-height",
     ]);
-    assert!(output.status.success());
-    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "102");
-    assert_eq!(proxy.connects.lock().unwrap().len(), 1);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("does not select"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[cfg(feature = "nym")]
@@ -326,11 +337,25 @@ async fn bond_info_takes_wire_order_hex() {
     );
     let url = serve_crosslink(mock).await;
 
-    let info = stdout_json(&lwcli(&["--url", &url, "get-bond-info", &"11".repeat(32)]));
+    let info = stdout_json(&lwcli(&[
+        "--url",
+        &url,
+        "--variant",
+        "crosslink",
+        "get-bond-info",
+        &"11".repeat(32),
+    ]));
     assert_eq!(info["amount"], 7000);
     assert_eq!(info["status"], 2);
 
-    let bad = lwcli(&["--url", &url, "get-bond-info", "zz"]);
+    let bad = lwcli(&[
+        "--url",
+        &url,
+        "--variant",
+        "crosslink",
+        "get-bond-info",
+        "zz",
+    ]);
     assert!(!bad.status.success());
     assert!(String::from_utf8_lossy(&bad.stderr).contains("not valid hex"));
 }
@@ -343,6 +368,8 @@ async fn faucet_donation_renders_the_amount() {
     let donation = stdout_json(&lwcli(&[
         "--url",
         &url,
+        "--variant",
+        "crosslink",
         "request-faucet-donation",
         "u1mock",
     ]));

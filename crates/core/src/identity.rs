@@ -113,12 +113,14 @@ macro_rules! impl_identity_methods {
                     .into_inner())
             }
 
-            /// Compact transactions currently in the mempool. `exclude_txid_suffixes`
-            /// suppresses transactions the caller already has (empty returns all);
-            /// that list names held transactions, which is what puts this RPC here.
+            /// Compact transactions currently in the mempool, restricted to
+            /// `pool_types` when non-empty. `exclude_txid_suffixes` suppresses
+            /// transactions the caller already has (empty returns all); that
+            /// list names held transactions, which is what puts this RPC here.
             pub async fn get_mempool_tx(
                 &self,
                 exclude_txid_suffixes: Vec<Vec<u8>>,
+                pool_types: Vec<$proto::PoolType>,
             ) -> $crate::error::Result<
                 futures_util::stream::BoxStream<'static, $crate::error::Result<$proto::CompactTx>>,
             > {
@@ -126,7 +128,7 @@ macro_rules! impl_identity_methods {
                 let stream = client
                     .get_mempool_tx($proto::GetMempoolTxRequest {
                         exclude_txid_suffixes,
-                        pool_types: Vec::new(),
+                        pool_types: pool_types.into_iter().map(|pool| pool as i32).collect(),
                     })
                     .await?
                     .into_inner();
@@ -179,4 +181,23 @@ macro_rules! impl_identity_methods {
     };
 }
 
-pub(crate) use impl_identity_methods;
+/// Emit the identity-client constructor on `$client`. Takes an
+/// [`crate::IdentityTransport`] rather than a bare channel: the sync channel
+/// cannot ride an identity client, and one transport cannot back two
+/// identities (the token is not `Clone`). One macro so both variants stay in
+/// lockstep, as with `impl_identity_methods`.
+macro_rules! impl_identity_ctors {
+    ($client:ident) => {
+        impl<T: $crate::transport::GrpcTransport> $client<T> {
+            /// Build this identity's client over a transport dedicated to one
+            /// unlinkability domain (docs/adr/0001).
+            pub fn new(transport: $crate::IdentityTransport<T>) -> Self {
+                Self {
+                    client: CompactTxStreamerClient::new(transport.into_inner()),
+                }
+            }
+        }
+    };
+}
+
+pub(crate) use {impl_identity_ctors, impl_identity_methods};

@@ -17,16 +17,21 @@
 //!   fetch, block ranges, tree state), the one place consumers are genuinely
 //!   variant-agnostic.
 //! - The rest of the chain-wide surface (mempool stream, subtree roots,
-//!   server info) exists as identical inherent methods on
-//!   [`CanonicalIndexerClient`] and [`CrosslinkIndexerClient`], returning each variant's
+//!   pool-filtered ranges, server info) exists as identical inherent methods
+//!   on [`CanonicalIndexerClient`] and [`CrosslinkIndexerClient`], returning each variant's
 //!   own generated types. Variant-only RPCs are inherent methods on
 //!   [`CrosslinkIndexerClient`] alone, never an `Option` on something shared.
 //! - RPCs whose request content names a wallet-specific identifier (a txid,
 //!   a transparent address, held transactions) live on
-//!   [`CanonicalIdentityClient`] and [`CrosslinkIdentityClient`], each built
-//!   over a transport of its own so they cannot ride the sync channel.
-//!   Construct one per identity the wallet wants a server to see as a
-//!   stranger (docs/adr/0001 in the repository).
+//!   [`CanonicalIdentityClient`] and [`CrosslinkIdentityClient`], so the sync
+//!   clients cannot issue them. Each is built from an [`IdentityTransport`], a
+//!   non-`Clone` token, so the sync channel cannot ride an identity client and
+//!   one transport cannot back two identities. That makes the partition the
+//!   default: a wallet mints one token per identity a server should see as a
+//!   distinct peer (`IdentityTransport::connect_lazy` for a fresh direct
+//!   channel, `IdentityTransport::dedicated` to wrap a privacy transport's).
+//!   Reusing one channel is still possible, but has to be written out, core
+//!   cannot detect a shared connection behind an opaque `Channel` (docs/adr/0001).
 //!
 //! # Transports, errors, streams
 //!
@@ -35,27 +40,45 @@
 //! `lightwallet-transport-tor` / `lightwallet-transport-nym`. Failures
 //! surface as [`Error`], with [`Error::code`] and [`Error::retryable`] for
 //! classification. Server streams are `BoxStream<'static, Result<T>>` whose
-//! items are individually fallible. Retries, timeouts, and backoff are
-//! deliberately absent: layer them on the consumer side, per method.
+//! items are individually fallible; a stream owns its own channel handle, so
+//! dropping the client does not cancel it (drop the stream instead), and an
+//! error item ends it (resume by calling again from the last good height).
+//! Retries, timeouts, and backoff are deliberately absent: layer them on the
+//! consumer side, per method.
+//!
+//! [`tonic`] and the generated proto crates ([`proto`]) are re-exported, so
+//! consumers need no direct dependency on either to name a status code,
+//! build an endpoint, or construct a request message.
 //!
 //! # Example
 //!
+//! Reaching an `https` endpoint needs the `tls` cargo feature and an
+//! explicit TLS config:
+//!
 //! ```no_run
-//! use lightwallet_core::{CanonicalIndexerClient, NetworkParams, IndexerClient};
-//! use tonic::transport::Endpoint;
+//! use lightwallet_core::tonic::transport::{ClientTlsConfig, Endpoint};
+//! use lightwallet_core::{
+//!     CanonicalIdentityClient, CanonicalIndexerClient, IdentityTransport,
+//!     IndexerClient, NetworkParams,
+//! };
 //!
 //! # #[tokio::main(flavor = "current_thread")]
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let channel = Endpoint::from_static("https://zec.rocks:443")
-//!     .connect()
-//!     .await?;
+//! let endpoint = Endpoint::from_static("https://zec.rocks:443")
+//!     .tls_config(ClientTlsConfig::new().with_webpki_roots())?;
 //! let params = NetworkParams {
 //!     chain_name: "main".into(),
 //!     activation_heights: Default::default(),
 //!     consensus_branch_id: 0,
 //! };
-//! let client = CanonicalIndexerClient::new(channel, params);
+//! let client = CanonicalIndexerClient::new(endpoint.connect().await?, params);
 //! let tip = client.get_latest_height().await?;
+//!
+//! // Identity-bearing RPCs ride a transport of their own. The token is the
+//! // only way to build the client, so the sync channel cannot ride along.
+//! let broadcaster =
+//!     CanonicalIdentityClient::new(IdentityTransport::connect_lazy(endpoint));
+//! # let _ = broadcaster;
 //! # Ok(())
 //! # }
 //! ```
@@ -66,9 +89,12 @@
 //!   [`CanonicalIdentityClient`], over `lightwallet-proto-canonical`.
 //! - `crosslink`: [`CrosslinkIndexerClient`] and [`CrosslinkIdentityClient`], over
 //!   `lightwallet-proto-crosslink`.
+//! - `tls` (default): forwards tonic's rustls (ring) and webpki-roots
+//!   features, for direct `https` connections as in the example above. Drop it
+//!   with `default-features = false` to bring your own tonic TLS.
 //!
-//! The features are additive. A build with neither still exposes the traits,
-//! [`NetworkParams`], and [`Error`].
+//! The variant features are additive. A build with neither still exposes the
+//! traits, [`NetworkParams`], and [`Error`].
 
 mod error;
 mod header;
@@ -80,11 +106,28 @@ mod params;
 mod streamer;
 mod transport;
 
-pub use error::{Error, Result};
+pub use error::{Error, MalformedInfo, Result};
 pub use header::{CompactBlockHeader, HashLen};
-pub use indexer::{IndexerClient, assert_continuity};
-pub use params::NetworkParams;
+pub use indexer::{IndexerClient, is_continuous};
+pub use params::{LightdInfoView, NetworkParams};
 pub use transport::GrpcTransport;
+#[cfg(any(feature = "canonical", feature = "crosslink"))]
+pub use transport::IdentityTransport;
+
+// tonic types (Status, Code, Channel, Endpoint) are load-bearing in this
+// crate's API, so the whole crate rides along; a consumer pinning their own
+// tonic would otherwise have to keep it in version lockstep with ours.
+pub use tonic;
+
+/// The generated proto crates, one per variant, re-exported so consumers can
+/// name message types (`GetSubtreeRootsArg`, `PoolType`, `LightdInfo`)
+/// without depending on the generated crates directly.
+pub mod proto {
+    #[cfg(feature = "canonical")]
+    pub use lightwallet_proto_canonical as canonical;
+    #[cfg(feature = "crosslink")]
+    pub use lightwallet_proto_crosslink as crosslink;
+}
 
 #[cfg(feature = "canonical")]
 mod canonical;
@@ -115,7 +158,7 @@ mod tests {
             prev_hash: vec![7u8; 32],
             ..Default::default()
         };
-        assert!(assert_continuity::<CanonicalIndexerClient<Channel>>(&a, &b));
+        assert!(is_continuous::<CanonicalIndexerClient<Channel>>(&a, &b));
 
         let c = lightwallet_proto_crosslink::CompactBlock {
             height: 100,
@@ -127,7 +170,7 @@ mod tests {
             prev_hash: vec![9u8; 32],
             ..Default::default()
         };
-        assert!(assert_continuity::<CrosslinkIndexerClient<Channel>>(&c, &d));
+        assert!(is_continuous::<CrosslinkIndexerClient<Channel>>(&c, &d));
     }
 
     // The macros are supposed to give both variants the same inherent surface
@@ -137,12 +180,16 @@ mod tests {
     fn both_variants_expose_the_full_shared_surface() {
         let _ = (
             CanonicalIndexerClient::<Channel>::get_latest_height,
+            CanonicalIndexerClient::<Channel>::get_latest_block,
+            CanonicalIndexerClient::<Channel>::get_block_range_pools,
             CanonicalIndexerClient::<Channel>::get_mempool_stream,
             CanonicalIndexerClient::<Channel>::get_lightd_info,
             CanonicalIndexerClient::<Channel>::ping,
         );
         let _ = (
             CrosslinkIndexerClient::<Channel>::get_latest_height,
+            CrosslinkIndexerClient::<Channel>::get_latest_block,
+            CrosslinkIndexerClient::<Channel>::get_block_range_pools,
             CrosslinkIndexerClient::<Channel>::get_mempool_stream,
             CrosslinkIndexerClient::<Channel>::get_lightd_info,
             CrosslinkIndexerClient::<Channel>::ping,
@@ -182,7 +229,7 @@ mod tests {
             prev_hash: vec![7u8; 32],
             ..Default::default()
         };
-        assert!(!assert_continuity::<CanonicalIndexerClient<Channel>>(&a, &b));
+        assert!(!is_continuous::<CanonicalIndexerClient<Channel>>(&a, &b));
     }
 
     #[test]
@@ -197,7 +244,7 @@ mod tests {
             prev_hash: vec![7u8; 32],
             ..Default::default()
         };
-        assert!(!assert_continuity::<CanonicalIndexerClient<Channel>>(&a, &b));
+        assert!(!is_continuous::<CanonicalIndexerClient<Channel>>(&a, &b));
     }
 
     #[test]
@@ -212,7 +259,7 @@ mod tests {
             prev_hash: vec![8u8; 32],
             ..Default::default()
         };
-        assert!(!assert_continuity::<CanonicalIndexerClient<Channel>>(&a, &b));
+        assert!(!is_continuous::<CanonicalIndexerClient<Channel>>(&a, &b));
 
         let c = lightwallet_proto_crosslink::CompactBlock {
             height: 100,
@@ -224,7 +271,7 @@ mod tests {
             prev_hash: vec![10u8; 32],
             ..Default::default()
         };
-        assert!(!assert_continuity::<CrosslinkIndexerClient<Channel>>(&c, &d));
+        assert!(!is_continuous::<CrosslinkIndexerClient<Channel>>(&c, &d));
     }
 
     #[test]

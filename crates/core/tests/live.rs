@@ -14,8 +14,8 @@
 
 use futures_util::StreamExt;
 use lightwallet_core::{
-    CanonicalIndexerClient, CompactBlockHeader, CrosslinkIndexerClient, NetworkParams, IndexerClient,
-    assert_continuity,
+    CanonicalIndexerClient, CompactBlockHeader, CrosslinkIndexerClient, IndexerClient,
+    NetworkParams, is_continuous,
 };
 use std::collections::BTreeMap;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
@@ -62,7 +62,7 @@ async fn scan_live_tip<I: IndexerClient>(indexer: &I, window: u64) {
         block.prev_block_hash().expect("32-byte prev hash");
         if let Some(prev) = &prev {
             assert!(
-                assert_continuity::<I>(prev, &block),
+                is_continuous::<I>(prev, &block),
                 "hash chain broke at height {}",
                 block.height()
             );
@@ -96,6 +96,19 @@ async fn canonical_indexer_against_a_live_endpoint() {
         info.chain_name
     );
 
+    // Bootstrapping params off the same server: branch id and sapling height
+    // come back parsed, no hardcoded table.
+    let discovered = indexer.discover_params().await.expect("discover params");
+    assert_eq!(discovered.chain_name, info.chain_name);
+    assert_ne!(
+        discovered.consensus_branch_id, 0,
+        "live server reported a zero branch id"
+    );
+    assert!(
+        discovered.activation_heights.contains_key("sapling"),
+        "discovered params missing the sapling activation height"
+    );
+
     scan_live_tip(&indexer, 10).await;
 
     // The inherent surface decodes real (non-compact) responses too.
@@ -115,6 +128,9 @@ async fn crosslink_indexer_against_a_live_featurenet() {
 
     let info = indexer.get_lightd_info().await.expect("lightd info");
     assert!(!info.chain_name.is_empty());
+
+    let discovered = indexer.discover_params().await.expect("discover params");
+    assert_eq!(discovered.chain_name, info.chain_name);
 
     scan_live_tip(&indexer, 10).await;
 

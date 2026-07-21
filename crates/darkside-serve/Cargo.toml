@@ -1,0 +1,33 @@
+[package]
+name = "darkside-serve"
+description = "The darkside server: both variants' CompactTxStreamer surfaces over one chain, plus the live and scenario drivers"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+darkside-chain = { path = "../darkside-chain" }
+darkside-decl = { path = "../darkside-decl" }
+lightwallet-core = { path = "../core", features = ["canonical", "crosslink"] }
+lightwallet-proto-canonical = { path = "../canonical" }
+lightwallet-proto-crosslink = { path = "../crosslink" }
+zcash_protocol.workspace = true
+orchard.workspace = true
+tonic.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+futures-util.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+rand.workspace = true
+tower.workspace = true
+hyper-util.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

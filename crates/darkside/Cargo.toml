@@ -1,0 +1,37 @@
+[package]
+name = "darkside"
+description = "The darkside binary: serve a live network-flavored chain over TCP"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "darkside"
+path = "src/main.rs"
+
+[features]
+# Off by default. Turnkey ironwood demo (`darkside experimental`): a preset
+# chain with sapling+orchard+ironwood live from boot, two accounts from fixed
+# BIP-39 mnemonics with one pre-funded in orchard, served live. Gated because
+# it pulls a BIP-39 dependency and serves a rigged chain.
+experimental = ["dep:bip0039", "dep:hex"]
+
+[dependencies]
+darkside-chain = { path = "../darkside-chain" }
+darkside-serve = { path = "../darkside-serve" }
+anyhow.workspace = true
+axum.workspace = true
+clap.workspace = true
+tokio = { workspace = true, features = [
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "signal",
+    "time",
+] }
+tokio-stream = { version = "0.1", features = ["net"] }
+tonic = { workspace = true, features = ["server"] }
+tracing-subscriber.workspace = true
+bip0039 = { version = "0.14", optional = true }
+hex = { workspace = true, optional = true }

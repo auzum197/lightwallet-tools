@@ -1,51 +1,49 @@
 # Zcash Lightwallet Protocol Layer
 
-Rust client crates for lightwalletd-style Zcash indexers. Two protocol
-variants sit behind one generic API: CANONICAL, the stock surface defined by
-[`zcash/lightwallet-protocol`](https://github.com/zcash/lightwallet-protocol),
-and CROSSLINK, the Crosslink fork's additive mirror (finalizer roster, bond
-info, faucet). Tor and Nym transports plug in without changing any call
-sites, and an in-memory mock harness covers the whole surface offline.
+Rust tooling for lightwalletd-style Zcash indexers, on both sides of the
+wire. The client crates put two protocol variants behind one generic API,
+CANONICAL ([`zcash/lightwallet-protocol`](https://github.com/zcash/lightwallet-protocol))
+and CROSSLINK (the Crosslink fork's additive mirror), and route them
+directly or through Tor or Nym without changing call sites. The darkside
+crates serve that same wire surface from a deterministic synthetic chain.
+A wallet pointed at one syncs against a fabricated history exactly as it
+would against a real indexer.
+
+> **Status: heavily experimental, heavy LLM-authored code right now.** Treat
+> most of this repo as a moving target that can change or break without notice.
+> The only stable-ish crates are the three library ones you would depend on:
+> [`lightwallet-core`](crates/core),
+> [`lightwallet-proto-canonical`](crates/canonical), and
+> [`lightwallet-proto-crosslink`](crates/crosslink). Everything else (the
+> transports, CLI, and the darkside tooling) is in flux.
+
+```mermaid
+flowchart LR
+  client["client stack<br/>lwcli, lightwallet-core"]
+  bindings["variant bindings<br/>canonical, crosslink"]
+  subgraph endpoints["indexer endpoints"]
+    real["lightwalletd / zaino"]
+    dark["darkside<br/>synthetic chain"]
+  end
+
+  client --> bindings
+  client ==>|"gRPC over direct, Tor, or Nym"| endpoints
+```
 
 ## Crates
 
-| Crate | What it is |
-|---|---|
-| [`lightwallet-core`](crates/core) | Capability traits, per-variant indexers, per-domain identity clients |
-| [`lightwallet-proto-canonical`](crates/canonical) | Generated bindings for the canonical protocol |
-| [`lightwallet-proto-crosslink`](crates/crosslink) | Generated bindings for the Crosslink variant |
-| [`lightwallet-transport-tor`](crates/transport-tor) | arti-backed tonic channels, each its own circuit-isolation domain |
-| [`lightwallet-transport-nym`](crates/transport-nym) | tonic channels through a running `nym-socks5-client` (experimental) |
-| [`lightwallet-test-support`](crates/test-support) | In-memory mock endpoints with fault injection, plus a SOCKS5 test server |
-| [`lightwallet-cli`](crates/cli) | `lwcli`, a one-shot debug client covering the full RPC surface |
-
-## Design in brief
-
-There is no shared normalized block type. Each variant keeps its generated
-types, and genericity comes from a narrow `CompactBlockHeader` capability
-plus associated types on `IndexerClient`, which carries only the block-sync
-path. The rest of the shared RPC surface is emitted as identical inherent
-methods on both indexers, and variant-only RPCs exist only on
-`CrosslinkIndexerClient`, never as an `Option` on something shared.
-
-RPCs that name a wallet-specific identifier (txids, transparent addresses,
-held transactions) live on separate identity clients, each over a transport
-of its own, so they cannot ride the sync channel. How many identity clients
-a wallet constructs is its unlinkability partition (docs/adr/0001).
-
-Transports yield plain tonic `Channel`s, so construction is the only thing
-that changes between direct, Tor, and Nym routes. Errors are
-`lightwallet_core::Error` with `code()`/`retryable()`. Retries, timeouts,
-and backoff are consumer-side tower layers, never built in.
-
-## Protos
-
-`proto/canonical/` is a pristine git subtree of `zcash/lightwallet-protocol`
-at a pinned tag. `proto/overlay/crosslink.proto` is a full mirror of the
-canonical service plus the CROSSLINK additions, because proto3 cannot extend
-services and Crosslink has no separable proto source. `just mirror-check`
-enforces that the overlay remains purely additive, and codegen runs `protox`
-in-process, so no `protoc` install is needed to build.
+- [`lightwallet-proto-canonical`](crates/canonical): generated tonic/prost bindings for the canonical lightwalletd protocol.
+- [`lightwallet-proto-crosslink`](crates/crosslink): the same generated bindings, for the Crosslink variant.
+- [`lightwallet-core`](crates/core): the client layer proper, typed access to indexers that is generic over both variant and transport. Its README covers taking it as a dependency.
+- [`lightwallet-transport-tor`](crates/transport-tor): tonic channels over Tor via arti, each channel its own circuit-isolation domain.
+- [`lightwallet-transport-nym`](crates/transport-nym): tonic channels through the Nym mixnet via a running `nym-socks5-client` (experimental).
+- [`lightwallet-cli`](crates/cli): `lwcli`, a one-shot point-at-anything debug client covering the full RPC surface.
+- [`lightwallet-test-support`](crates/test-support): in-memory mock endpoints with fault injection, plus a SOCKS5 test server.
+- [`darkside-chain`](crates/darkside-chain): a deterministic Zcash chain state machine with no network, clock, or I/O.
+- [`darkside-decl`](crates/darkside-decl): parses authored `.decl` files into chains and scenarios.
+- [`darkside-serve`](crates/darkside-serve): serves both variants' streamer surfaces over one darkside chain, plus the HTTP control surface and the live and scenario drivers.
+- [`darkside`](crates/darkside): the `darkside` binary, a live network-flavored synthetic chain served over TCP.
+- [`darkside-repl`](crates/darkside-repl): an interactive console that drives a running darkside (mine, fund, reorg, retime) over its control surface.
 
 ## Development
 

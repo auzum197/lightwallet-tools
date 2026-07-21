@@ -9,9 +9,14 @@ unless the caller groups them deliberately with `channel_with_isolation`.
 The identity-bearing RPCs (request content names a txid, a transparent
 address, or a held-transaction list) live only on the per-domain
 `CanonicalIdentityClient`/`CrosslinkIdentityClient` types. The indexer clients
-cannot issue them. A wallet expresses its own partition by how many identity
-clients it mints, one per identity it wants a server to see as a stranger,
-and core never chooses the partition for it.
+cannot issue them. Each identity client is built only from an
+`IdentityTransport`, a non-`Clone` token minted per domain
+(`IdentityTransport::connect_lazy` for a fresh direct channel,
+`IdentityTransport::dedicated` to wrap a privacy transport's), so the sync
+channel cannot ride an identity client and one transport cannot back two
+identities. A wallet expresses its own partition by how many tokens it mints,
+one per identity it wants a server to see as a distinct, unlinkable peer, and
+core never chooses the partition for it.
 
 ## Considered Options
 
@@ -31,9 +36,20 @@ and core never chooses the partition for it.
 ## Consequences
 
 Every channel pays its own circuit build, so identity clients should sit on
-`channel_lazy` and the cost lands on first use. Over the direct transport
-the split still binds (the types force it) but delivers no unlinkability,
-since one IP links everything. A future prefs-taking variant of the
-connector must keep the isolation token as its own required parameter rather
-than burying it inside `StreamPrefs`, so domain membership stays outside the
-configurable surface.
+`channel_lazy` (wrapped in `IdentityTransport::dedicated`) and the cost lands
+on first use. Over the direct transport the split still binds (the types force
+it) but delivers no unlinkability, since one IP links everything. A future
+prefs-taking variant of the connector must keep the isolation token as its own
+required parameter rather than burying it inside `StreamPrefs`, so domain
+membership stays outside the configurable surface.
+
+The `IdentityTransport` token closes the accidental-collapse hole: a bare
+`Channel` no longer constructs an identity client, and the token is not
+`Clone`, so `new(sync_channel.clone())` and reusing one token across clients
+both fail to compile. A transport-minting factory was considered for the same
+end and rejected as more machinery than the property needs: the token is a
+plain value, no closure or trait to inject. The guarantee has a ceiling set by
+tonic, not by this design: a `Channel` is opaque and cloneable, so wrapping a
+secretly-shared channel through `IdentityTransport::dedicated` cannot be
+detected. The point is that the reached-for path is correct and reuse has to
+be written out.

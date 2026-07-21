@@ -11,8 +11,8 @@ use clap_complete::Shell;
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
 use lightwallet_core::{
-    CanonicalIdentityClient, CanonicalIndexerClient, CrosslinkIdentityClient, CrosslinkIndexerClient,
-    NetworkParams, IndexerClient,
+    CanonicalIdentityClient, CanonicalIndexerClient, CrosslinkIdentityClient,
+    CrosslinkIndexerClient, IdentityTransport, IndexerClient, NetworkParams,
 };
 use render::{OutputMode, Renderer};
 use std::io::Read;
@@ -36,7 +36,7 @@ struct Cli {
     url: Option<String>,
 
     /// Protocol variant the endpoint serves [default: canonical; crosslink-only
-    /// commands imply crosslink]
+    /// commands require an explicit --variant crosslink]
     #[arg(long, global = true, value_enum)]
     variant: Option<Variant>,
 
@@ -55,8 +55,8 @@ struct Cli {
     #[arg(long, global = true, value_enum)]
     transport: Option<Transport>,
 
-    /// Address of a running nym-socks5-client. Passing it implies
-    /// --transport nym [default: 127.0.0.1:1080]
+    /// Address of a running nym-socks5-client, used only with --transport nym
+    /// [default: 127.0.0.1:1080]
     #[cfg(feature = "nym")]
     #[arg(long, global = true, value_name = "ADDR")]
     nym_socks5: Option<SocketAddr>,
@@ -66,16 +66,20 @@ struct Cli {
 }
 
 impl Cli {
-    /// The resolved transport. An explicit `--nym-socks5` implies nym, the
-    /// same rule crosslink-only commands use for the variant, and an explicit
-    /// contradiction is an error.
+    /// The resolved transport. `--nym-socks5` sets the nym client's address
+    /// but never selects nym on its own: without an explicit `--transport
+    /// nym` it is an error, as is pairing it with a different transport.
     #[cfg(feature = "nym")]
     fn transport(&self) -> Result<Transport> {
         match (self.transport, self.nym_socks5) {
-            (Some(chosen), Some(_)) if chosen != Transport::Nym => {
-                bail!("--nym-socks5 applies only to the nym transport")
+            (Some(Transport::Nym), _) => Ok(Transport::Nym),
+            (Some(_), Some(_)) => bail!("--nym-socks5 applies only to the nym transport"),
+            (None, Some(_)) => {
+                bail!(
+                    "--nym-socks5 sets the nym client address but does not select it; \
+                       pass --transport nym"
+                )
             }
-            (_, Some(_)) => Ok(Transport::Nym),
             (chosen, None) => Ok(chosen.unwrap_or(Transport::Direct)),
         }
     }
@@ -257,13 +261,13 @@ macro_rules! dispatch_identity {
             Variant::Canonical => {
                 #[allow(unused_imports)]
                 use lightwallet_proto_canonical as $proto;
-                let $ix = CanonicalIdentityClient::new($channel);
+                let $ix = CanonicalIdentityClient::new(IdentityTransport::dedicated($channel));
                 $body
             }
             Variant::Crosslink => {
                 #[allow(unused_imports)]
                 use lightwallet_proto_crosslink as $proto;
-                let $ix = CrosslinkIdentityClient::new($channel);
+                let $ix = CrosslinkIdentityClient::new(IdentityTransport::dedicated($channel));
                 $body
             }
         }
@@ -280,10 +284,10 @@ async fn main() -> Result<()> {
     }
 
     let variant = match (cli.command.crosslink_only(), cli.variant) {
-        (true, Some(Variant::Canonical)) => {
-            bail!("this command exists only on the crosslink variant")
+        (true, Some(Variant::Crosslink)) => Variant::Crosslink,
+        (true, _) => {
+            bail!("this command exists only on the crosslink variant; pass --variant crosslink")
         }
-        (true, _) => Variant::Crosslink,
         (false, chosen) => chosen.unwrap_or(Variant::Canonical),
     };
 
@@ -384,7 +388,10 @@ async fn main() -> Result<()> {
                 .map(|suffix| hex::decode(suffix).context("--exclude takes hex"))
                 .collect::<Result<Vec<_>>>()?;
             dispatch_identity!(variant, channel, |ix, proto| {
-                let txs = ix.get_mempool_tx(exclude).await.map_err(rpc_err)?;
+                let txs = ix
+                    .get_mempool_tx(exclude, Vec::new())
+                    .await
+                    .map_err(rpc_err)?;
                 drain(txs, &renderer, "CompactTx").await
             })
         }
@@ -472,7 +479,7 @@ async fn main() -> Result<()> {
             renderer.unary(&info, "BondInfoResponse")
         }
         Cmd::RequestFaucetDonation { address } => {
-            let ix = CrosslinkIdentityClient::new(channel);
+            let ix = CrosslinkIdentityClient::new(IdentityTransport::dedicated(channel));
             let donation = ix.request_faucet_donation(address).await.map_err(rpc_err)?;
             renderer.unary(&donation, "FaucetResponse")
         }
@@ -627,9 +634,21 @@ mod tests {
 
     #[cfg(feature = "nym")]
     #[test]
-    fn nym_socks5_implies_the_transport() {
+    fn nym_socks5_does_not_select_the_transport() {
+        // Without an explicit --transport nym, the address alone is an error
+        // rather than a silent switch to nym.
         let cli = Cli::parse_from([
             "lwcli",
+            "--nym-socks5",
+            "127.0.0.1:9060",
+            "get-latest-height",
+        ]);
+        assert!(cli.transport().is_err());
+
+        let cli = Cli::parse_from([
+            "lwcli",
+            "--transport",
+            "nym",
             "--nym-socks5",
             "127.0.0.1:9060",
             "get-latest-height",

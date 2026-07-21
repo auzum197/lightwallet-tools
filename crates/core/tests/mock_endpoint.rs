@@ -7,7 +7,7 @@
 use futures_util::StreamExt;
 use lightwallet_core::{
     CanonicalIdentityClient, CanonicalIndexerClient, CompactBlockHeader, CrosslinkIdentityClient,
-    CrosslinkIndexerClient, NetworkParams, IndexerClient, assert_continuity,
+    CrosslinkIndexerClient, IdentityTransport, IndexerClient, NetworkParams, is_continuous,
 };
 use lightwallet_proto_crosslink::BondInfoResponse;
 use lightwallet_test_support::{Rpc, canonical, crosslink, mock_hash};
@@ -33,7 +33,7 @@ async fn sync_to_tip<I: IndexerClient>(indexer: &I, start: u64) -> u64 {
         let block = block.unwrap();
         block.block_hash().unwrap();
         if let Some(prev) = &prev {
-            assert!(assert_continuity::<I>(prev, &block));
+            assert!(is_continuous::<I>(prev, &block));
         }
         prev = Some(block);
         seen += 1;
@@ -201,7 +201,7 @@ async fn faults_on_crosslink_only_rpcs_surface_with_their_codes() {
     // channel; in-memory tests have no domains to keep apart.
     let channel = crosslink::serve(mock).await;
     let indexer = CrosslinkIndexerClient::new(channel.clone(), params("mock"));
-    let identity = CrosslinkIdentityClient::new(channel);
+    let identity = CrosslinkIdentityClient::new(IdentityTransport::dedicated(channel));
 
     let roster = indexer.get_roster().await.unwrap_err();
     assert_eq!(roster.code(), Some(Code::Unavailable));
@@ -226,7 +226,8 @@ async fn get_transaction_round_trips_and_unknown_txid_is_not_found() {
         height: 7,
     };
     let mock = canonical::MockStreamer::new().with_transaction(vec![1; 32], tx);
-    let client = CanonicalIdentityClient::new(canonical::serve(mock).await);
+    let client =
+        CanonicalIdentityClient::new(IdentityTransport::dedicated(canonical::serve(mock).await));
 
     let fetched = client.get_transaction(vec![1; 32]).await.unwrap();
     assert_eq!(fetched.data, vec![0xaa; 10]);
@@ -252,6 +253,41 @@ async fn lightd_info_and_ping_answer_from_the_mock() {
     );
     let pong = indexer.ping(0).await.unwrap();
     assert_eq!((pong.entry, pong.exit), (0, 0));
+}
+
+#[tokio::test]
+async fn discover_params_maps_lightd_info_into_network_params() {
+    let info = lightwallet_proto_canonical::LightdInfo {
+        chain_name: "featurenet".into(),
+        consensus_branch_id: "c2d6d0b4".into(),
+        sapling_activation_height: 1,
+        upgrade_name: "nu6".into(),
+        upgrade_height: 500,
+        ..Default::default()
+    };
+    let mock = canonical::MockStreamer::new().with_lightd_info(info);
+    let indexer = CanonicalIndexerClient::new(canonical::serve(mock).await, params("mock"));
+
+    let discovered = indexer.discover_params().await.unwrap();
+    assert_eq!(discovered.chain_name, "featurenet");
+    assert_eq!(discovered.consensus_branch_id, 0xc2d6_d0b4);
+    assert_eq!(discovered.activation_heights.get("sapling"), Some(&1));
+    assert_eq!(discovered.activation_heights.get("nu6"), Some(&500));
+}
+
+#[tokio::test]
+async fn discover_params_rejects_a_non_hex_branch_id() {
+    let info = lightwallet_proto_canonical::LightdInfo {
+        consensus_branch_id: "not-hex".into(),
+        ..Default::default()
+    };
+    let mock = canonical::MockStreamer::new().with_lightd_info(info);
+    let indexer = CanonicalIndexerClient::new(canonical::serve(mock).await, params("mock"));
+
+    let err = indexer.discover_params().await.unwrap_err();
+    assert!(err.code().is_none());
+    assert!(!err.retryable());
+    assert!(matches!(err, lightwallet_core::Error::Info(_)));
 }
 
 #[tokio::test]
@@ -345,7 +381,7 @@ async fn genesis_block_carries_an_all_zero_prev_hash() {
     assert_eq!(genesis.prev_block_hash().unwrap(), [0u8; 32]);
 
     let next = indexer.get_block(1).await.unwrap();
-    assert!(assert_continuity::<
+    assert!(is_continuous::<
         CanonicalIndexerClient<tonic::transport::Channel>,
     >(&genesis, &next));
 }
@@ -376,12 +412,12 @@ async fn consumer_detects_a_reorg_through_continuity() {
 
     type Ix = CanonicalIndexerClient<tonic::transport::Channel>;
     let new_4 = indexer.get_block(4).await.unwrap();
-    assert!(!assert_continuity::<Ix>(&held_3, &new_4));
+    assert!(!is_continuous::<Ix>(&held_3, &new_4));
 
     let new_3 = indexer.get_block(3).await.unwrap();
     let unchanged_2 = indexer.get_block(2).await.unwrap();
-    assert!(assert_continuity::<Ix>(&unchanged_2, &new_3));
-    assert!(assert_continuity::<Ix>(&new_3, &new_4));
+    assert!(is_continuous::<Ix>(&unchanged_2, &new_3));
+    assert!(is_continuous::<Ix>(&new_3, &new_4));
 }
 
 #[tokio::test]
@@ -415,7 +451,8 @@ async fn missing_block_maps_to_not_found_not_a_panic() {
 async fn sent_transactions_are_observable_on_the_mock() {
     let mock = canonical::MockStreamer::new();
     let inbox = mock.clone();
-    let client = CanonicalIdentityClient::new(canonical::serve(mock).await);
+    let client =
+        CanonicalIdentityClient::new(IdentityTransport::dedicated(canonical::serve(mock).await));
 
     let resp = client.send_transaction(vec![0xab; 40]).await.unwrap();
     assert_eq!(resp.error_code, 0);
@@ -439,7 +476,7 @@ async fn crosslink_only_surface_answers_concretely() {
         .with_faucet_amount(250_000);
     let channel = crosslink::serve(mock).await;
     let indexer = CrosslinkIndexerClient::new(channel.clone(), params("mock"));
-    let identity = CrosslinkIdentityClient::new(channel);
+    let identity = CrosslinkIdentityClient::new(IdentityTransport::dedicated(channel));
 
     let bond = indexer.get_bond_info(vec![1; 32]).await.unwrap();
     assert_eq!((bond.amount, bond.status), (5_000, 1));
@@ -469,10 +506,11 @@ async fn mempool_txs_honor_the_exclude_suffixes() {
         ..Default::default()
     };
     let mock = canonical::MockStreamer::new().with_mempool_txs([tx(1), tx(2)]);
-    let client = CanonicalIdentityClient::new(canonical::serve(mock).await);
+    let client =
+        CanonicalIdentityClient::new(IdentityTransport::dedicated(canonical::serve(mock).await));
 
     let all: Vec<_> = client
-        .get_mempool_tx(Vec::new())
+        .get_mempool_tx(Vec::new(), Vec::new())
         .await
         .unwrap()
         .collect()
@@ -480,7 +518,7 @@ async fn mempool_txs_honor_the_exclude_suffixes() {
     assert_eq!(all.len(), 2);
 
     let remaining: Vec<_> = client
-        .get_mempool_tx(vec![vec![1]])
+        .get_mempool_tx(vec![vec![1]], Vec::new())
         .await
         .unwrap()
         .map(|tx| tx.unwrap().txid[31])
@@ -516,7 +554,8 @@ async fn taddress_transactions_filter_by_height_range() {
     };
     let mock =
         canonical::MockStreamer::new().with_taddress_txs("t1known", [raw(5), raw(10), raw(15)]);
-    let client = CanonicalIdentityClient::new(canonical::serve(mock).await);
+    let client =
+        CanonicalIdentityClient::new(IdentityTransport::dedicated(canonical::serve(mock).await));
 
     let heights: Vec<u64> = client
         .get_taddress_transactions("t1known".into(), 8, 20)
@@ -549,7 +588,8 @@ async fn taddress_transactions_filter_by_height_range() {
 async fn balance_answers_both_unary_and_client_streaming() {
     let mock = canonical::MockStreamer::new().with_balance(1_234);
     let inbox = mock.clone();
-    let client = CanonicalIdentityClient::new(canonical::serve(mock).await);
+    let client =
+        CanonicalIdentityClient::new(IdentityTransport::dedicated(canonical::serve(mock).await));
 
     let unary = client
         .get_taddress_balance(vec!["t1a".into()])
@@ -578,7 +618,8 @@ async fn utxos_respect_max_entries_on_both_forms() {
         ..Default::default()
     };
     let mock = canonical::MockStreamer::new().with_utxos([utxo(1), utxo(2), utxo(3)]);
-    let client = CanonicalIdentityClient::new(canonical::serve(mock).await);
+    let client =
+        CanonicalIdentityClient::new(IdentityTransport::dedicated(canonical::serve(mock).await));
 
     let from_2 = client
         .get_address_utxos(vec!["t1known".into()], 2, 0)
@@ -643,14 +684,42 @@ async fn crosslink_mempool_txs_flow_through_the_macro_surface() {
         ..Default::default()
     };
     let mock = crosslink::MockStreamer::new().with_mempool_txs([tx]);
-    let client = CrosslinkIdentityClient::new(crosslink::serve(mock).await);
+    let client =
+        CrosslinkIdentityClient::new(IdentityTransport::dedicated(crosslink::serve(mock).await));
 
     let txs: Vec<_> = client
-        .get_mempool_tx(Vec::new())
+        .get_mempool_tx(Vec::new(), Vec::new())
         .await
         .unwrap()
         .collect()
         .await;
     assert_eq!(txs.len(), 1);
     assert_eq!(txs[0].as_ref().unwrap().txid, vec![9u8; 32]);
+}
+
+#[tokio::test]
+async fn latest_block_carries_the_tip_hash_the_trait_drops() {
+    let mock = canonical::MockStreamer::new().with_blocks(canonical::linked_blocks(100, 5));
+    let indexer = CanonicalIndexerClient::new(canonical::serve(mock).await, params("mock"));
+
+    let tip = indexer.get_latest_block().await.unwrap();
+    assert_eq!(tip.height, 104);
+    assert_eq!(tip.hash, mock_hash(104).to_vec());
+}
+
+#[tokio::test]
+async fn pool_filtered_range_round_trips_the_enum() {
+    use lightwallet_proto_canonical::PoolType;
+
+    let mock = canonical::MockStreamer::new().with_blocks(canonical::linked_blocks(0, 3));
+    let indexer = CanonicalIndexerClient::new(canonical::serve(mock).await, params("mock"));
+
+    let heights: Vec<u64> = indexer
+        .get_block_range_pools(0, 2, vec![PoolType::Sapling, PoolType::Orchard])
+        .await
+        .unwrap()
+        .map(|block| block.unwrap().height())
+        .collect()
+        .await;
+    assert_eq!(heights, [0, 1, 2]);
 }

@@ -1,0 +1,14 @@
+[package]
+name = "darkside-decl"
+description = "Declaration parser for the darkside: text to chains and scenarios"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+darkside-chain = { path = "../darkside-chain" }
+zcash_protocol.workspace = true

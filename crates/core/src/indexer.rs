@@ -21,13 +21,22 @@ pub trait IndexerClient {
     /// This variant's generated note-commitment tree-state type.
     type TreeState;
 
-    /// Height of the block at the tip of the best chain.
+    /// Height of the block at the tip of the best chain. The wire also
+    /// reports the tip hash; the inherent `get_latest_block` on each concrete
+    /// client keeps it.
     async fn get_latest_height(&self) -> Result<u64>;
-    /// The compact block at `height` on the best chain.
+    /// The compact block at `height` on the best chain. Addressed by height
+    /// on purpose: the protocol makes hash lookup optional for blocks, so a
+    /// server may reject it. Returns transaction data for every pool,
+    /// transparent included, unlike the range path whose default is
+    /// shielded-only.
     async fn get_block(&self, height: u64) -> Result<Self::Block>;
 
     /// Consecutive blocks in `[start, end]`, streamed. `end` is inclusive. Each
-    /// item is fallible: a stream can fail partway on a dropped connection.
+    /// item is fallible: a stream can fail partway on a dropped connection,
+    /// and an error item ends the stream. With no pool filter the server
+    /// returns shielded data only; for pool-filtered ranges see the inherent
+    /// `get_block_range_pools` on each concrete client.
     async fn get_block_range(
         &self,
         start: u64,
@@ -44,7 +53,9 @@ pub trait IndexerClient {
 
 /// One generic function checks header continuity across variants with no shared
 /// block type and no conversion code. Generic over the client to prove its
-/// associated `Block` type carries the capability through.
-pub fn assert_continuity<I: IndexerClient>(prev: &I::Block, cur: &I::Block) -> bool {
-    cur.height() == prev.height() + 1 && cur.prev_hash() == prev.hash()
+/// associated `Block` type carries the capability through. The subtraction is
+/// checked because heights come from the server: a block at height 0 extends
+/// nothing, and a hostile `u64::MAX` must not panic a debug build.
+pub fn is_continuous<I: IndexerClient>(prev: &I::Block, cur: &I::Block) -> bool {
+    cur.height().checked_sub(1) == Some(prev.height()) && cur.prev_hash() == prev.hash()
 }

@@ -2,8 +2,11 @@
 name = "lightwallet-core"
 description = "Variant- and transport-generic client layer for Zcash lightwalletd-style indexers"
 readme = "README.md"
+keywords = ["zcash", "lightwalletd", "grpc", "tonic", "wallet"]
+categories = ["cryptography::cryptocurrencies", "api-bindings"]
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish.workspace = true
 
 [package.metadata.docs.rs]
@@ -16,8 +19,10 @@ workspace = true
 tonic.workspace = true
 futures-util.workspace = true
 trait-variant = "0.1"
-lightwallet-proto-canonical = { path = "../canonical", optional = true }
-lightwallet-proto-crosslink = { path = "../crosslink", optional = true }
+# version alongside path so these resolve in-workspace now (path wins) and
+# from crates.io once the proto crates are published.
+lightwallet-proto-canonical = { path = "../canonical", version = "0.1.0", optional = true }
+lightwallet-proto-crosslink = { path = "../crosslink", version = "0.1.0", optional = true }
 
 [dev-dependencies]
 lightwallet-test-support = { path = "../test-support" }
@@ -25,6 +30,12 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tonic = { workspace = true, features = ["tls-ring", "tls-webpki-roots"] }
 
 [features]
-default = ["canonical"]
+# tls is on by default: TLS runs end-to-end to the indexer even over Tor/Nym,
+# so a direct https endpoint working out of the box is the common case. A
+# consumer bringing its own tonic TLS drops it with default-features = false.
+default = ["canonical", "tls"]
 canonical = ["dep:lightwallet-proto-canonical"]
 crosslink = ["dep:lightwallet-proto-crosslink"]
+# Forwarded so a consumer can reach https endpoints without a direct tonic
+# dependency: rustls with ring, verifying against the webpki root store.
+tls = ["tonic/tls-ring", "tonic/tls-webpki-roots"]

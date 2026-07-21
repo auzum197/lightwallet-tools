@@ -14,7 +14,7 @@
 
 use futures_util::StreamExt;
 use lightwallet_core::{
-    CanonicalIndexerClient, CompactBlockHeader, NetworkParams, IndexerClient, assert_continuity,
+    CanonicalIndexerClient, CompactBlockHeader, IndexerClient, NetworkParams, is_continuous,
 };
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -69,7 +69,7 @@ async fn canonical_indexer_over_nym() {
         block.block_hash().expect("32-byte block hash");
         if let Some(prev) = &prev {
             assert!(
-                assert_continuity::<CanonicalIndexerClient<Channel>>(prev, &block),
+                is_continuous::<CanonicalIndexerClient<Channel>>(prev, &block),
                 "hash chain broke at height {}",
                 block.height()
             );

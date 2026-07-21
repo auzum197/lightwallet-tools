@@ -22,6 +22,25 @@ Goal: produce prose and code that reads as if written by a specific, competent h
 
 ### Prose
 
+#### Economy and precision (adapted from Strunk's Elements of Style)
+
+- Omit needless words. Every word must earn its place. Cut filler phrases entirely:
+  - "the fact that"            → delete or restructure
+  - "in order to"              → "to"
+  - "due to the fact that"     → "because"
+  - "at this point in time"    → "now"
+  - "has the ability to"       → "can"
+  - "there is X that does Y"   → "X does Y"
+  - "essentially" / "basically" / "fundamentally" → almost always delete
+- Use the active voice. Prefer "the parser rejects malformed input" over "malformed input is rejected by the parser". Passive voice only when the actor is unknown or irrelevant.
+- Put statements in positive form. Say what something is, not what it isn't. "The cache is stale" beats "the cache is not up to date". No "not un-" constructions.
+- Use definite, specific, concrete language. "Sync stalls after 40k blocks" beats "performance degrades under certain conditions". If you have a number, a name, or a mechanism, state it.
+- One paragraph, one topic. Don't braid two ideas together and rely on connectors to hold them.
+- Place emphatic words at the end of the sentence. Don't bury the key claim mid-sentence and trail off with qualifiers.
+- Don't overstate. Cut intensifiers ("very", "extremely", "incredibly"). When uncertainty is real, hedge precisely ("untested on mainnet"), not vaguely ("may or may not work").
+- Do not explain too much. State the point once. If a sentence adds no new information, delete it.
+- Revise by deletion. When tightening prose, the default operation is removal, not substitution. A shorter draft that says the same thing is strictly better.
+
 #### Punctuation
 - No em dashes. Use commas, parentheses, or separate sentences.
 - No semicolons. Split into two sentences.
@@ -34,6 +53,17 @@ Goal: produce prose and code that reads as if written by a specific, competent h
 - "Whether you're X or Y" catch-all wrap-ups.
 - Forced analogies ("think of it like a...").
 
+#### Avoid manufactured logical connectors generally
+
+Don't use "so," "which means," "therefore," or "as a result" unless the
+second clause is a genuine, non-obvious consequence of the first. Don't
+use "not just X, but Y" or "it's not merely A, it's B" as a rhetorical
+crutch. When two clauses are just parallel facts, write them as
+parallel facts — don't dress them up as an inference.
+
+Rule of thumb: if you can delete "so" and replace it with a period
+without losing meaning, the "so" was decorative. Delete it.
+
 #### Openers and closers
 - No throat-clearing: "It's important to note", "It's worth noting", restating the question before answering.
 - No grandiose closers or zoom-outs: "In conclusion", "Ultimately", "At the end of the day", "in an ever-evolving world". Stop when the point is made.
@@ -45,7 +75,7 @@ Goal: produce prose and code that reads as if written by a specific, competent h
 - Assert plainly. Cut reflexive hedging and over-qualification.
 
 #### Vocabulary to avoid
-- delve, tapestry, realm, landscape, navigate/navigating, leverage, robust, seamless, crucial, vital, pivotal, testament, boasts, nestled, foster, harness, unlock, elevate, embark, showcase, underscore, spearhead, treasure trove, game-changer, cheap, liveness, gap, shape, correctness, alive, honest, simple, probe, contact, stay.
+- delve, tapestry, realm, landscape, navigate/navigating, leverage, robust, seamless, crucial, vital, pivotal, testament, boasts, nestled, foster, harness, unlock, elevate, embark, showcase, underscore, spearhead, treasure trove, game-changer, cheap, liveness, gap, shape, correctness, alive, honest, simple, probe, contact, stay, stranger.
 
 #### Formatting
 - Don't bold the lead phrase of every bullet.
@@ -66,6 +96,7 @@ Goal: produce prose and code that reads as if written by a specific, competent h
 - Cut hype words: powerful, effortless, blazing-fast, supercharge, transform, unlock, simply, just.
 - Don't pitch benefits at the reader ("you'll love how fast it is", "say goodbye to X", "no more Y"). State what the thing does and let it stand.
 - Avoid the staccato rhythm of short fragments stacked for impact, exclamatory energy, and calls to action. That cadence is built to persuade, not to inform.
+- Do not affect a breezy or ornamental manner. No "let's dive in", no "the beauty of this approach is". Plain statements, plainly made.
 
 ### Code (all languages)
 
@@ -117,8 +148,8 @@ Goal: produce prose and code that reads as if written by a specific, competent h
 
 ### Issue tracker
 
-Issues are tracked in GitHub Issues via the `gh` CLI; external PRs are not
-a triage surface. Note: no GitHub remote is configured yet — push this repo
+Issues are tracked in GitHub Issues via the `gh` CLI. External PRs are not
+a triage surface. Note: no GitHub remote is configured yet, so push this repo
 to GitHub before using the tracker skills. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels

@@ -13,7 +13,7 @@
 
 use futures_util::StreamExt;
 use lightwallet_core::{
-    CanonicalIndexerClient, CompactBlockHeader, NetworkParams, IndexerClient, assert_continuity,
+    CanonicalIndexerClient, CompactBlockHeader, IndexerClient, NetworkParams, is_continuous,
 };
 use lightwallet_proto_canonical::compact_tx_streamer_server::CompactTxStreamerServer;
 use lightwallet_test_support::canonical::{MockStreamer, linked_blocks};
@@ -72,7 +72,9 @@ async fn grpc_flows_through_the_tunnel() {
         let block = block.unwrap();
         block.block_hash().unwrap();
         if let Some(prev) = &prev {
-            assert!(assert_continuity::<CanonicalIndexerClient<Channel>>(prev, &block));
+            assert!(is_continuous::<CanonicalIndexerClient<Channel>>(
+                prev, &block
+            ));
         }
         prev = Some(block);
         seen += 1;
