@@ -25,13 +25,13 @@
 //!   a transparent address, held transactions) live on
 //!   [`CanonicalIdentityClient`] and [`CrosslinkIdentityClient`], so the sync
 //!   clients cannot issue them. Each is built from an [`IdentityTransport`], a
-//!   non-`Clone` token, so the sync channel cannot ride an identity client and
+//!   non-`Clone` token, so the sync channel cannot leak onto an identity client and
 //!   one transport cannot back two identities. That makes the partition the
 //!   default: a wallet mints one token per identity a server should see as a
 //!   distinct peer (`IdentityTransport::connect_lazy` for a fresh direct
 //!   channel, `IdentityTransport::dedicated` to wrap a privacy transport's).
 //!   Reusing one channel is still possible, but has to be written out, core
-//!   cannot detect a shared connection behind an opaque `Channel` (docs/adr/0001).
+//!   cannot detect a shared connection behind an opaque `Channel`.
 //!
 //! # Transports, errors, streams
 //!
@@ -74,8 +74,8 @@
 //! let client = CanonicalIndexerClient::new(endpoint.connect().await?, params);
 //! let tip = client.get_latest_height().await?;
 //!
-//! // Identity-bearing RPCs ride a transport of their own. The token is the
-//! // only way to build the client, so the sync channel cannot ride along.
+//! // Identity-bearing RPCs use a transport of their own. The token is the
+//! // only way to build the client, so the sync channel cannot leak onto it.
 //! let broadcaster =
 //!     CanonicalIdentityClient::new(IdentityTransport::connect_lazy(endpoint));
 //! # let _ = broadcaster;
@@ -115,7 +115,7 @@ pub use transport::GrpcTransport;
 pub use transport::IdentityTransport;
 
 // tonic types (Status, Code, Channel, Endpoint) are load-bearing in this
-// crate's API, so the whole crate rides along; a consumer pinning their own
+// crate's API, so the whole crate is coupled to it; a consumer pinning their own
 // tonic would otherwise have to keep it in version lockstep with ours.
 pub use tonic;
 

@@ -37,7 +37,7 @@ impl<T> GrpcTransport for T where
 ///
 /// Deliberately not `Clone`: a token backs exactly one identity client, so a
 /// channel cannot fan out across domains by handing the same one to several
-/// clients (docs/adr/0001). A bare `Channel` does not construct an identity
+/// clients. A bare `Channel` does not construct an identity
 /// client at all, so the sync channel cannot leak onto an identity client by
 /// accident. The residual case, wrapping a channel that is secretly shared,
 /// has to be written out through [`IdentityTransport::dedicated`], since a

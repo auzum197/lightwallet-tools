@@ -24,7 +24,7 @@
 //!     lightwallet_transport_tor::channel(&endpoint, &tor).await?,
 //!     params,
 //! );
-//! // Identity-bearing RPCs ride an identity client with a channel of its
+//! // Identity-bearing RPCs use an identity client with a channel of its
 //! // own, so its own circuits. The lazy form builds no circuit until the
 //! // first RPC fires.
 //! let broadcast = CanonicalIdentityClient::new(IdentityTransport::dedicated(
@@ -39,7 +39,7 @@
 //!
 //! Every [`channel`]/[`channel_lazy`] call mints a fresh isolation token, so
 //! two channels never share a circuit: each channel is its own unlinkability
-//! domain (docs/adr/0001). To place several channels in one domain on
+//! domain. To place several channels in one domain on
 //! purpose, mint an [`IsolationToken`] and build each of them with
 //! [`channel_with_isolation`] or [`channel_lazy_with_isolation`].
 
