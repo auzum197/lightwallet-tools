@@ -59,7 +59,7 @@ impl_streamer_methods!(CanonicalIndexerClient, proto);
 /// One unlinkability domain on the CANONICAL variant: the identity-bearing
 /// RPCs, over a transport of their own. Mint one per identity the wallet
 /// wants a server to see as a stranger (each transparent address, each
-/// broadcast, each confirmation poll); see docs/adr/0001.
+/// broadcast, each confirmation poll).
 pub struct CanonicalIdentityClient<T> {
     client: CompactTxStreamerClient<T>,
 }

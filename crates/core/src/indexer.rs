@@ -12,8 +12,8 @@ use futures_util::stream::BoxStream;
 /// generated types; a wallet talks to one variant chosen at startup, so that
 /// surface never needs to be generic. The identity-bearing RPCs (transactions,
 /// transparent-address queries, utxos) are not on the indexer client at all: they
-/// live on the per-domain identity clients so they cannot ride the sync
-/// channel (docs/adr/0001).
+/// live on the per-domain identity clients so they cannot leak onto the sync
+/// channel.
 #[trait_variant::make(Send)]
 pub trait IndexerClient {
     /// This variant's generated compact-block type.

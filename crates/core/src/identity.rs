@@ -1,9 +1,9 @@
 //! The identity-bearing half of the wire surface: RPCs whose request content
 //! names a wallet-specific identifier (a txid, a transparent address, a list
 //! of held transactions). They are deliberately absent from the indexers, so
-//! a request that names an identity cannot ride the sync channel and the
+//! a request that names an identity cannot leak onto the sync channel and the
 //! wallet's partition of its own activity is expressed by how many identity
-//! clients it constructs (see docs/adr/0001 and CONTEXT.md). As with
+//! clients it constructs. As with
 //! `streamer.rs`, one macro emits the same surface for both variants.
 
 /// Emit the identity-bearing RPC surface as inherent methods on `$client`,
@@ -183,14 +183,14 @@ macro_rules! impl_identity_methods {
 
 /// Emit the identity-client constructor on `$client`. Takes an
 /// [`crate::IdentityTransport`] rather than a bare channel: the sync channel
-/// cannot ride an identity client, and one transport cannot back two
+/// cannot leak onto an identity client, and one transport cannot back two
 /// identities (the token is not `Clone`). One macro so both variants stay in
 /// lockstep, as with `impl_identity_methods`.
 macro_rules! impl_identity_ctors {
     ($client:ident) => {
         impl<T: $crate::transport::GrpcTransport> $client<T> {
             /// Build this identity's client over a transport dedicated to one
-            /// unlinkability domain (docs/adr/0001).
+            /// unlinkability domain.
             pub fn new(transport: $crate::IdentityTransport<T>) -> Self {
                 Self {
                     client: CompactTxStreamerClient::new(transport.into_inner()),
