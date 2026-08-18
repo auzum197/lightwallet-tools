@@ -14,7 +14,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::app::{App, BlockRow, DrillOrigin, Focus, Phase, Row, TaddrHit, View};
 use crate::health::Health;
 use crate::theme::{self, color};
-use lightwallet_txview::{PoolInput, PoolOutput, Value, format_zats, input_pools, output_pools};
+use lightwallet_txview::{
+    Fee, InputTotal, PoolInput, PoolOutput, Value, format_zats, input_pools, output_pools,
+};
 
 pub fn draw(f: &mut Frame, app: &App) {
     let [header, body, footer] = Layout::vertical([
@@ -430,6 +432,28 @@ fn value_str(value: &Value) -> String {
     }
 }
 
+/// The fee, with a word for each state that has no number yet: still resolving
+/// its transparent inputs, or a lookup that failed. Never a wrong amount.
+fn fee_str(fee: &Fee) -> String {
+    match fee {
+        Fee::Known(zats) => format_zats(*zats),
+        Fee::Pending => "resolving…".to_string(),
+        Fee::Unresolvable => "?".to_string(),
+        Fee::Unknown => "—".to_string(),
+    }
+}
+
+/// The transparent input total, or `None` when the tx has no transparent inputs
+/// and there is nothing to show.
+fn input_total_str(total: &InputTotal) -> Option<String> {
+    match total {
+        InputTotal::None => None,
+        InputTotal::Pending => Some("resolving…".to_string()),
+        InputTotal::Known(zats) => Some(format_zats(*zats)),
+        InputTotal::Unresolvable => Some("?".to_string()),
+    }
+}
+
 fn value_span(value: &Value, text: String) -> Span<'static> {
     let rgb = match value {
         Value::Shielded => theme::WARN,
@@ -516,14 +540,22 @@ fn human_lines(detail: &crate::app::TxDetail) -> Vec<Line<'static>> {
         Span::styled("value    ", fg(theme::FAINT)),
         value_span(&tx.value, value_str(&tx.value)),
     ]));
-    let fee = match tx.fee {
-        Some(f) => Span::styled(format_zats(f), fg(theme::GOOD)),
-        // A stateless server can't price a tx with transparent inputs.
-        None => Span::styled("— (server didn't provide)".to_string(), fg(theme::FAINT)),
+    // The transparent input total, shown only when there are inputs to resolve,
+    // so a fully-shielded tx's pane stays uncluttered.
+    if let Some(text) = input_total_str(&tx.input_total) {
+        lines.push(Line::from(vec![
+            Span::styled("t-inputs ", fg(theme::FAINT)),
+            Span::styled(text, fg(theme::TEXT)),
+        ]));
+    }
+    let fee = tx.fee();
+    let fee_rgb = match fee {
+        Fee::Known(_) => theme::GOOD,
+        _ => theme::FAINT,
     };
     lines.push(Line::from(vec![
         Span::styled("fee      ", fg(theme::FAINT)),
-        fee,
+        Span::styled(fee_str(&fee), fg(fee_rgb)),
     ]));
     lines.push(Line::from(""));
 

@@ -1,15 +1,21 @@
 //! Shared transaction projection for the lightwallet tools.
 //!
 //! The one place a serialized Zcash transaction becomes a readable view: txid,
-//! version, per-pool inputs and outputs down to nullifiers and scripts, moved
-//! value, and fee. Both the inspector (`lwcli`) and the dashboard (`lwtui`)
-//! parse through [`parse`], so they can never disagree about what a transaction
-//! is; they differ only in how they present it. [`ParsedTx`] serializes to the
-//! canonical JSON shape, so the tools' machine output stays identical too.
+//! version, size, per-pool inputs and outputs down to nullifiers and scripts,
+//! moved value, and fee. Both the inspector (`lwcli`) and the dashboard
+//! (`lwtui`) parse through [`parse`], so they can never disagree about what a
+//! transaction is; they differ only in how they present it. [`ParsedTx`]
+//! serializes to the canonical JSON shape, so the tools' machine output stays
+//! identical too.
 //!
-//! Every field here is public on the wire: [`parse`] sees only the transaction
-//! bytes, no keys and no spent UTXOs, so no note plaintext, no shielded amount,
-//! and no transparent-input value ever appears.
+//! A transaction's bytes carry its transparent outputs' values but not its
+//! transparent inputs': an input names the funding output ([`OutPoint`]) it
+//! spends, and the amount lives in that output. [`parse`] therefore leaves the
+//! input total [`InputTotal::Pending`] and records the prevouts; a caller that
+//! can follow them ([`ParsedTx::resolve`]) fills the total and turns the fee
+//! exact. Absent that resolution, [`parse`] reads only the transaction bytes,
+//! no keys and no spent UTXOs, so no note plaintext and no shielded amount ever
+//! appears.
 
 mod params;
 
@@ -187,6 +193,63 @@ pub enum Value {
     Unknown,
 }
 
+/// The funding output a transparent input spends: a transaction hash plus the
+/// index of the output within it. The value the input contributes lives in that
+/// output, off-chain from the spending tx, so learning it means following this
+/// reference to its source.
+#[derive(Clone)]
+pub struct OutPoint {
+    /// Funding transaction hash in wire (internal) byte order, as
+    /// `get_transaction` wants it. Display order is its reverse.
+    pub hash: [u8; 32],
+    /// Index of the funded output within that transaction.
+    pub index: u32,
+}
+
+impl OutPoint {
+    /// The funding txid in display (explorer) order.
+    pub fn txid(&self) -> String {
+        hash_to_display(&self.hash)
+    }
+}
+
+impl Serialize for OutPoint {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(2))?;
+        map.serialize_entry("txid", &self.txid())?;
+        map.serialize_entry("index", &self.index)?;
+        map.end()
+    }
+}
+
+/// The summed value of a transaction's transparent inputs, and whether it is
+/// yet known. Distinct from the shielded case in [`Value`]: shielded amounts are
+/// unknowable without keys, an input total is knowable but needs a lookup.
+#[derive(Clone)]
+pub enum InputTotal {
+    /// No transparent inputs; there is nothing to resolve.
+    None,
+    /// Transparent inputs present, their funding values not yet looked up.
+    Pending,
+    /// Summed transparent input value, in zatoshis.
+    Known(i64),
+    /// A funding lookup failed, so the total (and the fee) can't be shown.
+    Unresolvable,
+}
+
+/// A transaction fee, and whether it is yet knowable. Derived from the input
+/// total: exact once the transparent inputs resolve, pending until then.
+pub enum Fee {
+    /// Exact fee in zatoshis.
+    Known(i64),
+    /// Waiting on transparent input resolution.
+    Pending,
+    /// Input resolution failed, so the fee can't be shown.
+    Unresolvable,
+    /// The tx did not parse.
+    Unknown,
+}
+
 /// A serialized transaction, read into the fields a human or a program wants.
 /// `txid` is `None` only when the bytes did not parse, in which case `error`
 /// carries why and the row still means something.
@@ -205,13 +268,53 @@ pub struct ParsedTx {
     pub inputs: Vec<PoolInput>,
     pub outputs: Vec<PoolOutput>,
     pub value: Value,
-    /// Zatoshis, present only when computable from the tx alone (no transparent
-    /// inputs, whose amounts live off-chain in the spent UTXOs).
-    pub fee: Option<i64>,
+    /// Transparent output values in order (zatoshis). What this transaction
+    /// offers as funding to a later one: a spender's [`OutPoint`] with index `i`
+    /// draws `vout_values[i]`.
+    pub vout_values: Vec<i64>,
+    /// The funding outputs this transaction's transparent inputs spend, in input
+    /// order. Empty when the tx has no transparent inputs. Following these is
+    /// what turns [`InputTotal::Pending`] into a known total.
+    pub prevouts: Vec<OutPoint>,
+    /// The transparent input total's resolution state.
+    pub input_total: InputTotal,
+    /// The fee's input-independent term, `shielded value balance - transparent
+    /// out`, always known from the tx bytes. `None` only on a parse failure.
+    /// Added to the resolved input total to get the exact fee. Not serialized:
+    /// callers read [`ParsedTx::fee`], not this term.
+    pub fee_base: Option<i64>,
     pub error: Option<String>,
 }
 
 impl ParsedTx {
+    /// The fee, derived from the input total. Exact once the transparent inputs
+    /// resolve, or immediately when there are none.
+    pub fn fee(&self) -> Fee {
+        let Some(base) = self.fee_base else {
+            return Fee::Unknown;
+        };
+        match self.input_total {
+            InputTotal::None => Fee::Known(base),
+            InputTotal::Pending => Fee::Pending,
+            InputTotal::Known(total) => Fee::Known(base + total),
+            InputTotal::Unresolvable => Fee::Unresolvable,
+        }
+    }
+
+    /// Apply a followed transparent input total: `Some(total)` when every
+    /// prevout resolved, `None` when one could not be, which leaves the total
+    /// (and the fee) unresolvable rather than wrong. A no-op unless the tx was
+    /// awaiting resolution.
+    pub fn resolve(&mut self, total: Option<i64>) {
+        if !matches!(self.input_total, InputTotal::Pending) {
+            return;
+        }
+        self.input_total = match total {
+            Some(total) => InputTotal::Known(total),
+            None => InputTotal::Unresolvable,
+        };
+    }
+
     /// A compact one-line human summary: short txid, version, pools, value, fee.
     /// The censoring is textual here (`shielded`), not the TUI's redaction bar.
     pub fn summary(&self) -> String {
@@ -234,8 +337,10 @@ impl ParsedTx {
             Value::Shielded => "shielded".to_string(),
             Value::Unknown => "—".to_string(),
         };
-        let fee = self.fee.map(format_zats).unwrap_or_else(|| "—".to_string());
-        format!("{txid}  {version}  {pools}  {value}  fee {fee}")
+        format!(
+            "{txid}  {version}  {pools}  {value}  fee {}",
+            fee_text(&self.fee())
+        )
     }
 }
 
@@ -263,6 +368,28 @@ fn short_txid(txid: &str) -> String {
         return txid.to_string();
     }
     format!("{}…{}", &txid[..8], &txid[txid.len() - 6..])
+}
+
+/// A fee rendered for a human: an amount, or a word for the states that have no
+/// number yet.
+fn fee_text(fee: &Fee) -> String {
+    match fee {
+        Fee::Known(zats) => format_zats(*zats),
+        // "unresolved", not "pending": the shared summary serves lwcli too,
+        // which reads a tx without following prevouts, so nothing is in flight.
+        Fee::Pending => "unresolved".to_string(),
+        Fee::Unresolvable => "?".to_string(),
+        Fee::Unknown => "—".to_string(),
+    }
+}
+
+/// A funding hash (wire order) as a display-order txid.
+fn hash_to_display(hash: &[u8; 32]) -> String {
+    let mut s = String::with_capacity(64);
+    for byte in hash.iter().rev() {
+        s.push_str(&format!("{byte:02x}"));
+    }
+    s
 }
 
 /// Format zatoshis as ZEC without trailing zeros. Integer arithmetic keeps all
@@ -298,7 +425,24 @@ impl Serialize for ParsedTx {
             Value::Shielded => map.serialize_entry("value", "shielded")?,
             Value::Unknown => map.serialize_entry("value", &Option::<i64>::None)?,
         }
-        map.serialize_entry("fee", &self.fee)?;
+        if !self.prevouts.is_empty() {
+            map.serialize_entry("prevouts", &self.prevouts)?;
+        }
+        // The transparent input total, keyed like value: an amount under
+        // `inputs_value_zat`, a state word under `inputs_value`, absent when the
+        // tx has no transparent inputs.
+        match self.input_total {
+            InputTotal::None => {}
+            InputTotal::Pending => map.serialize_entry("inputs_value", "unresolved")?,
+            InputTotal::Known(total) => map.serialize_entry("inputs_value_zat", &total)?,
+            InputTotal::Unresolvable => map.serialize_entry("inputs_value", "unresolvable")?,
+        }
+        match self.fee() {
+            Fee::Known(zats) => map.serialize_entry("fee", &zats)?,
+            Fee::Pending => map.serialize_entry("fee", "unresolved")?,
+            Fee::Unresolvable => map.serialize_entry("fee", "unresolvable")?,
+            Fee::Unknown => map.serialize_entry("fee", &Option::<i64>::None)?,
+        }
         map.serialize_entry("error", &self.error)?;
         map.end()
     }
@@ -318,7 +462,10 @@ pub fn parse<P: Parameters>(data: &[u8], height: BlockHeight, params: &P) -> Par
         inputs: Vec::new(),
         outputs: Vec::new(),
         value: Value::Unknown,
-        fee: None,
+        vout_values: Vec::new(),
+        prevouts: Vec::new(),
+        input_total: InputTotal::None,
+        fee_base: None,
         error: None,
     };
 
@@ -338,7 +485,6 @@ pub fn parse<P: Parameters>(data: &[u8], height: BlockHeight, params: &P) -> Par
     view.expiry_height = Some(u32::from(tx.expiry_height()));
 
     let net = params.network_type();
-    let mut no_transparent_inputs = true;
     let mut transparent_out: i64 = 0;
     let mut shielded_output = false;
     // Net value leaving the shielded pools into the transparent pool. For a
@@ -347,7 +493,6 @@ pub fn parse<P: Parameters>(data: &[u8], height: BlockHeight, params: &P) -> Par
 
     if let Some(t) = tx.transparent_bundle() {
         if !t.vin.is_empty() {
-            no_transparent_inputs = false;
             let vin = t
                 .vin
                 .iter()
@@ -359,9 +504,17 @@ pub fn parse<P: Parameters>(data: &[u8], height: BlockHeight, params: &P) -> Par
                 })
                 .collect();
             view.inputs.push(PoolInput::Transparent { vin });
+            view.prevouts = t
+                .vin
+                .iter()
+                .map(|vin| OutPoint {
+                    hash: *vin.prevout().hash(),
+                    index: vin.prevout().n(),
+                })
+                .collect();
+            view.input_total = InputTotal::Pending;
         }
         if !t.vout.is_empty() {
-            transparent_out = t.vout.iter().map(|o| o.value().into_u64() as i64).sum();
             let vout = t
                 .vout
                 .iter()
@@ -374,6 +527,8 @@ pub fn parse<P: Parameters>(data: &[u8], height: BlockHeight, params: &P) -> Par
                 })
                 .collect();
             view.outputs.push(PoolOutput::Transparent { vout });
+            view.vout_values = t.vout.iter().map(|o| o.value().into_u64() as i64).collect();
+            transparent_out = view.vout_values.iter().sum();
         }
     }
 
@@ -451,9 +606,10 @@ pub fn parse<P: Parameters>(data: &[u8], height: BlockHeight, params: &P) -> Par
         Value::Clear(transparent_out)
     };
 
-    if no_transparent_inputs {
-        view.fee = Some(value_balance - transparent_out);
-    }
+    // The fee is `inputs - outputs`. Its input-independent term is known now;
+    // the transparent input total is added once resolved. A fully-shielded tx
+    // has no transparent inputs, so this term already is the fee.
+    view.fee_base = Some(value_balance - transparent_out);
     view
 }
 
@@ -504,6 +660,31 @@ mod tests {
         ChainParams::featurenet()
     }
 
+    fn transparent_pending(prevouts: usize) -> ParsedTx {
+        ParsedTx {
+            txid: Some("ab".repeat(32)),
+            version: Some("V5".into()),
+            size: 300,
+            consensus_branch_id: Some("nu5".into()),
+            lock_time: Some(0),
+            expiry_height: Some(0),
+            inputs: vec![PoolInput::Transparent { vin: Vec::new() }],
+            outputs: vec![PoolOutput::Transparent { vout: Vec::new() }],
+            value: Value::Clear(400_000),
+            vout_values: vec![400_000],
+            prevouts: (0..prevouts)
+                .map(|i| OutPoint {
+                    hash: [i as u8; 32],
+                    index: i as u32,
+                })
+                .collect(),
+            input_total: InputTotal::Pending,
+            // outputs 400_000, no shielded, so fee = resolved inputs - 400_000.
+            fee_base: Some(-400_000),
+            error: None,
+        }
+    }
+
     #[test]
     fn unparseable_bytes_yield_a_degraded_view() {
         let view = parse(
@@ -513,8 +694,9 @@ mod tests {
         );
         assert!(view.txid.is_none());
         assert!(view.error.is_some());
-        assert!(view.fee.is_none());
+        assert!(matches!(view.fee(), Fee::Unknown));
         assert!(matches!(view.value, Value::Unknown));
+        assert!(matches!(view.input_total, InputTotal::None));
     }
 
     #[test]
@@ -542,13 +724,65 @@ mod tests {
                 }],
             }],
             value: Value::Clear(500_000),
-            fee: None,
+            vout_values: vec![500_000],
+            prevouts: Vec::new(),
+            input_total: InputTotal::None,
+            fee_base: None,
             error: None,
         };
         let json = serde_json::to_string(&view).unwrap();
         assert!(json.contains("\"value_zat\":500000"));
         assert!(json.contains("\"pool\":\"transparent\""));
         assert!(json.contains("\"consensus_branch_id\":\"nu5\""));
+    }
+
+    #[test]
+    fn a_pending_input_total_yields_a_pending_fee() {
+        let view = transparent_pending(2);
+        assert!(matches!(view.fee(), Fee::Pending));
+        assert!(view.summary().contains("fee unresolved"));
+    }
+
+    #[test]
+    fn resolving_inputs_makes_the_fee_exact() {
+        let mut view = transparent_pending(1);
+        // 410_000 in, 400_000 out => 10_000 fee.
+        view.resolve(Some(410_000));
+        assert!(matches!(view.input_total, InputTotal::Known(410_000)));
+        assert!(matches!(view.fee(), Fee::Known(10_000)));
+        assert!(view.summary().contains("fee 0.0001 ZEC"));
+    }
+
+    #[test]
+    fn a_failed_lookup_leaves_the_fee_unresolvable_not_wrong() {
+        let mut view = transparent_pending(1);
+        view.resolve(None);
+        assert!(matches!(view.input_total, InputTotal::Unresolvable));
+        assert!(matches!(view.fee(), Fee::Unresolvable));
+    }
+
+    #[test]
+    fn resolve_is_inert_without_pending_inputs() {
+        let mut view = parse(&[0xff, 0x00], BlockHeight::from_u32(0), &params());
+        view.resolve(Some(1_000));
+        assert!(matches!(view.input_total, InputTotal::None));
+    }
+
+    #[test]
+    fn a_pending_tx_serializes_its_prevouts_and_states() {
+        let json = serde_json::to_string(&transparent_pending(1)).unwrap();
+        assert!(json.contains("\"inputs_value\":\"unresolved\""));
+        assert!(json.contains("\"fee\":\"unresolved\""));
+        assert!(json.contains("\"prevouts\":[{"));
+    }
+
+    #[test]
+    fn a_resolved_tx_serializes_amounts() {
+        let mut view = transparent_pending(1);
+        view.resolve(Some(410_000));
+        let json = serde_json::to_string(&view).unwrap();
+        assert!(json.contains("\"inputs_value_zat\":410000"));
+        assert!(json.contains("\"fee\":10000"));
     }
 
     #[test]
@@ -560,23 +794,22 @@ mod tests {
     }
 
     #[test]
+    fn an_outpoint_reads_its_hash_in_display_order() {
+        let mut hash = [0u8; 32];
+        hash[0] = 0xaa;
+        hash[31] = 0xff;
+        let op = OutPoint { hash, index: 0 };
+        // Display order is the reverse of wire order: last byte reads first.
+        assert!(op.txid().starts_with("ff"));
+        assert!(op.txid().ends_with("aa"));
+    }
+
+    #[test]
     fn summary_reads_as_one_human_line() {
-        let view = ParsedTx {
-            txid: Some("ab".repeat(32)),
-            version: Some("V5".into()),
-            size: 500,
-            consensus_branch_id: Some("nu5".into()),
-            lock_time: Some(0),
-            expiry_height: Some(0),
-            inputs: vec![PoolInput::Transparent { vin: Vec::new() }],
-            outputs: vec![PoolOutput::Transparent { vout: Vec::new() }],
-            value: Value::Clear(500_000),
-            fee: Some(10_000),
-            error: None,
-        };
+        let mut view = transparent_pending(1);
+        view.resolve(Some(410_000));
         let line = view.summary();
         assert!(line.contains("transparent → transparent"));
-        assert!(line.contains("0.005 ZEC"));
         assert!(line.contains("fee 0.0001 ZEC"));
     }
 
@@ -609,7 +842,10 @@ mod tests {
                 outputs: Vec::new(),
             }],
             value: Value::Shielded,
-            fee: Some(20_000),
+            vout_values: Vec::new(),
+            prevouts: Vec::new(),
+            input_total: InputTotal::None,
+            fee_base: Some(20_000),
             error: None,
         };
         let json = serde_json::to_string(&view).unwrap();

@@ -15,8 +15,10 @@ use crate::net::Request;
 
 /// A mempool transaction as the monitor tracks it: the shared projection, the
 /// raw bytes (for the drill-down's raw view), and the two view-local facts
-/// txview doesn't carry. `seq` binds a selection, so incoming rows never move
-/// the cursor off the tx being read.
+/// txview doesn't carry. `seq` is assigned by the producer and is what both a
+/// selection and a later value patch bind to, so incoming rows never move the
+/// cursor off the tx being read and a resolved input total lands on the right
+/// row.
 pub struct Row {
     pub seq: u64,
     pub first_seen: Instant,
@@ -113,9 +115,20 @@ pub enum Phase {
 
 /// A message from the network task.
 pub enum Update {
-    /// A new mempool transaction.
-    Tx(Row),
-    /// A mempool block boundary: clear the pending set and adopt the new tip.
+    /// A new mempool transaction. `seq` is already assigned by the producer.
+    /// Boxed: it dwarfs the other variants, and they share this channel at the
+    /// same rate under a refill.
+    Tx(Box<Row>),
+    /// A transparent input total, followed to its funding outputs after the row
+    /// arrived. `total` is `Some` when every prevout resolved, `None` when one
+    /// could not be, which shows as unresolvable rather than a wrong fee. Lands
+    /// on the row with this `seq`, or is dropped if that row is already gone.
+    ValueResolved {
+        seq: u64,
+        total: Option<i64>,
+    },
+    /// A block boundary: clear the pending set and adopt the new tip. Carries
+    /// the tip block's miner timestamp when the server gave one.
     Block {
         tip: u64,
         mined_unix: Option<u32>,
@@ -204,7 +217,6 @@ pub struct App {
     selected_block_seq: Option<u64>,
     /// Selected result index.
     selected_hit: usize,
-    next_seq: u64,
     next_block_seq: u64,
     start: Instant,
     req: UnboundedSender<Request>,
@@ -245,7 +257,6 @@ impl App {
             selected_row: None,
             selected_block_seq: None,
             selected_hit: 0,
-            next_seq: 0,
             next_block_seq: 0,
             start: Instant::now(),
             req,
@@ -282,11 +293,16 @@ impl App {
 
     pub(crate) fn apply(&mut self, update: Update) {
         match update {
-            Update::Tx(mut row) => {
-                row.seq = self.next_seq;
-                self.next_seq += 1;
-                self.rows.push_front(row);
+            Update::Tx(row) => {
+                self.rows.push_front(*row);
                 self.rows.truncate(MAX_ROWS);
+            }
+            Update::ValueResolved { seq, total } => {
+                // A late patch for a row cleared at a block boundary has no
+                // target; dropping it is correct, the tx is gone.
+                if let Some(row) = self.rows.iter_mut().find(|r| r.seq == seq) {
+                    row.tx.resolve(total);
+                }
             }
             Update::Block { tip, mined_unix } => {
                 if self.tip != 0 && tip > self.tip {
@@ -834,12 +850,28 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lightwallet_txview::{ParsedTx, Value};
+    use lightwallet_txview::{InputTotal, OutPoint, ParsedTx, Value};
     use tokio::sync::mpsc;
 
     fn app() -> (App, mpsc::UnboundedReceiver<Request>) {
         let (tx, rx) = mpsc::unbounded_channel();
         (App::new(tx, App::DEFAULT_TARGET), rx)
+    }
+
+    /// A shielded row with no transparent inputs, addressed by `seq`.
+    fn tx_row(seq: u64) -> Box<Row> {
+        Box::new(mempool_row_seq(seq))
+    }
+
+    /// A row whose transparent input total is awaiting resolution.
+    fn pending_row(seq: u64) -> Box<Row> {
+        let mut row = mempool_row_seq(seq);
+        row.tx.prevouts = vec![OutPoint {
+            hash: [1u8; 32],
+            index: 0,
+        }];
+        row.tx.input_total = InputTotal::Pending;
+        Box::new(row)
     }
 
     fn press(code: KeyCode) -> KeyEvent {
@@ -863,18 +895,25 @@ mod tests {
             inputs: Vec::new(),
             outputs: Vec::new(),
             value: Value::Shielded,
-            fee: Some(1_000),
+            vout_values: Vec::new(),
+            prevouts: Vec::new(),
+            input_total: InputTotal::None,
+            fee_base: Some(1_000),
             error: None,
         }
     }
 
-    fn mempool_row() -> Row {
+    fn mempool_row_seq(seq: u64) -> Row {
         Row {
-            seq: 0,
+            seq,
             first_seen: Instant::now(),
             tx: parsed(),
             raw: vec![0u8; 8],
         }
+    }
+
+    fn mempool_row() -> Box<Row> {
+        Box::new(mempool_row_seq(0))
     }
 
     fn block(height: u64, time: u32) -> BlockRow {
@@ -902,13 +941,32 @@ mod tests {
     }
 
     #[test]
-    fn mempool_rows_prepend_with_incrementing_seqs() {
+    fn newest_row_is_front_carrying_its_producer_seq() {
         let (mut app, _rx) = app();
-        app.apply(Update::Tx(mempool_row()));
-        app.apply(Update::Tx(mempool_row()));
+        app.apply(Update::Tx(tx_row(0)));
+        app.apply(Update::Tx(tx_row(1)));
         assert_eq!(app.rows.len(), 2);
         assert_eq!(app.rows[0].seq, 1);
         assert_eq!(app.rows[1].seq, 0);
+    }
+
+    #[test]
+    fn a_resolved_total_lands_on_its_row_and_a_stale_one_is_dropped() {
+        let (mut app, _rx) = app();
+        app.apply(Update::Tx(pending_row(7)));
+        app.apply(Update::ValueResolved {
+            seq: 7,
+            total: Some(410_000),
+        });
+        assert!(matches!(
+            app.rows[0].tx.input_total,
+            InputTotal::Known(410_000)
+        ));
+        // A patch for a seq no longer present is a no-op, not a panic.
+        app.apply(Update::ValueResolved {
+            seq: 999,
+            total: Some(1),
+        });
     }
 
     #[test]

@@ -88,6 +88,17 @@ Live monitor shows. Not a running history. When a block arrives the stream
 ends, transactions mined into it leave the set, and the view rebuilds from the
 new tip. "Clear and repopulate" is this boundary made visible.
 
+## Prevout resolution
+
+Following a transparent input's outpoint (funding txid plus output index) to the
+output it spends, to read the input's value. A transaction's bytes carry the
+input's reference but not its amount, so the amount is recoverable only from the
+funding output. A funder still in the Pending set resolves locally. A confirmed
+funder needs a `GetTransaction` lookup, which is identity-bearing. A funder in a
+shielded pool has no readable value without keys, so resolution covers
+transparent inputs only. What turns the Live monitor's fee from omitted (the
+ADR 0003 stance) into exact.
+
 ## Network parameters
 
 Per-deployment runtime data: activation heights, consensus branch ID, chain
