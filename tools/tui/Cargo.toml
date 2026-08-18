@@ -15,6 +15,7 @@ lightwallet-txview = { path = "../txview" }
 anyhow.workspace = true
 clap.workspace = true
 crossterm.workspace = true
+hex.workspace = true
 futures-util.workspace = true
 ratatui.workspace = true
 serde = { workspace = true }

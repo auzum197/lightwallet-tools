@@ -1,18 +1,29 @@
 //! Shared transaction projection for the lightwallet tools.
 //!
 //! The one place a serialized Zcash transaction becomes a readable view: txid,
-//! version, size, per-pool inputs and outputs, moved value, and fee. Both the
-//! inspector (`lwcli`) and the dashboard (`lwtui`) parse through [`parse`], so
-//! they can never disagree about what a transaction is; they differ only in how
-//! they present it. [`ParsedTx`] serializes to the canonical JSON shape, so the
-//! tools' machine output stays identical too.
+//! version, per-pool inputs and outputs down to nullifiers and scripts, moved
+//! value, and fee. Both the inspector (`lwcli`) and the dashboard (`lwtui`)
+//! parse through [`parse`], so they can never disagree about what a transaction
+//! is; they differ only in how they present it. [`ParsedTx`] serializes to the
+//! canonical JSON shape, so the tools' machine output stays identical too.
+//!
+//! Every field here is public on the wire: [`parse`] sees only the transaction
+//! bytes, no keys and no spent UTXOs, so no note plaintext, no shielded amount,
+//! and no transparent-input value ever appears.
+
+mod params;
 
 use std::fmt;
 
 use serde::Serialize;
 use serde::ser::{SerializeMap, Serializer};
 use zcash_primitives::transaction::Transaction;
-use zcash_protocol::consensus::BranchId;
+use zcash_protocol::consensus::{BranchId, Parameters};
+
+pub use params::{ChainParams, FeatureNet};
+// Re-exported so callers naming a height for `parse` need no direct
+// `zcash_protocol` dependency.
+pub use zcash_protocol::consensus::BlockHeight;
 
 /// A value pool a transaction touches on one side (input or output).
 #[derive(Clone, Copy, PartialEq, Eq, Serialize)]
@@ -36,7 +47,137 @@ impl fmt::Display for Pool {
     }
 }
 
+/// An encrypted blob shown as its length, never its bytes: the ciphertext is
+/// public but says nothing without a key, and the raw hexdump already carries
+/// every byte for anyone who wants them.
+#[derive(Clone, Copy, Serialize)]
+pub struct Blob {
+    pub bytes: usize,
+}
+
+/// A transparent input: which prior output it spends, its unlocking script, and
+/// its sequence number.
+#[derive(Clone, Serialize)]
+pub struct TxIn {
+    pub prevout_txid: String,
+    pub prevout_index: u32,
+    pub script_sig: String,
+    pub sequence: u32,
+}
+
+/// A transparent output: its value in the clear, its locking script, and the
+/// decoded address for a standard P2PKH/P2SH script (`None` for non-standard,
+/// where the script hex is the only handle).
+#[derive(Clone, Serialize)]
+pub struct TxOut {
+    pub value_zat: i64,
+    pub script_pubkey: String,
+    pub address: Option<String>,
+}
+
+/// A Sapling spend: the note's nullifier and the randomized verification key.
+#[derive(Clone, Serialize)]
+pub struct SaplingSpend {
+    pub nullifier: String,
+    pub rk: String,
+}
+
+/// A Sapling output: the note commitment, ephemeral key, and the two
+/// ciphertexts as presence-plus-length.
+#[derive(Clone, Serialize)]
+pub struct SaplingOutput {
+    pub cmu: String,
+    pub ephemeral_key: String,
+    pub enc_ciphertext: Blob,
+    pub out_ciphertext: Blob,
+}
+
+/// The spend half of an Orchard/Ironwood action.
+#[derive(Clone, Serialize)]
+pub struct ActionSpend {
+    pub nullifier: String,
+    pub rk: String,
+}
+
+/// The output half of an Orchard/Ironwood action.
+#[derive(Clone, Serialize)]
+pub struct ActionOutput {
+    pub cmx: String,
+    pub ephemeral_key: String,
+    pub enc_ciphertext: Blob,
+    pub out_ciphertext: Blob,
+}
+
+/// An Orchard/Ironwood bundle's spend/output enable flags.
+#[derive(Clone, Copy, Serialize)]
+pub struct Flags {
+    pub spends_enabled: bool,
+    pub outputs_enabled: bool,
+}
+
+/// One pool's contribution on the spend side. Bundle-level facts (anchor, value
+/// balance, flags) sit on the entry once, not duplicated per item.
+#[derive(Clone, Serialize)]
+#[serde(tag = "pool", rename_all = "lowercase")]
+pub enum PoolInput {
+    Transparent {
+        vin: Vec<TxIn>,
+    },
+    Sapling {
+        anchor: String,
+        value_balance_zat: i64,
+        spends: Vec<SaplingSpend>,
+    },
+    Orchard {
+        anchor: String,
+        value_balance_zat: i64,
+        flags: Flags,
+        spends: Vec<ActionSpend>,
+    },
+    Ironwood {
+        anchor: String,
+        value_balance_zat: i64,
+        flags: Flags,
+        spends: Vec<ActionSpend>,
+    },
+}
+
+impl PoolInput {
+    /// Which pool this entry describes.
+    pub fn pool(&self) -> Pool {
+        match self {
+            PoolInput::Transparent { .. } => Pool::Transparent,
+            PoolInput::Sapling { .. } => Pool::Sapling,
+            PoolInput::Orchard { .. } => Pool::Orchard,
+            PoolInput::Ironwood { .. } => Pool::Ironwood,
+        }
+    }
+}
+
+/// One pool's contribution on the output side.
+#[derive(Clone, Serialize)]
+#[serde(tag = "pool", rename_all = "lowercase")]
+pub enum PoolOutput {
+    Transparent { vout: Vec<TxOut> },
+    Sapling { outputs: Vec<SaplingOutput> },
+    Orchard { outputs: Vec<ActionOutput> },
+    Ironwood { outputs: Vec<ActionOutput> },
+}
+
+impl PoolOutput {
+    /// Which pool this entry describes.
+    pub fn pool(&self) -> Pool {
+        match self {
+            PoolOutput::Transparent { .. } => Pool::Transparent,
+            PoolOutput::Sapling { .. } => Pool::Sapling,
+            PoolOutput::Orchard { .. } => Pool::Orchard,
+            PoolOutput::Ironwood { .. } => Pool::Ironwood,
+        }
+    }
+}
+
 /// The value a transaction moved, as far as the wire reveals it.
+#[derive(Clone)]
 pub enum Value {
     /// Fully transparent outputs: the amount is in the clear (zatoshis).
     Clear(i64),
@@ -49,6 +190,7 @@ pub enum Value {
 /// A serialized transaction, read into the fields a human or a program wants.
 /// `txid` is `None` only when the bytes did not parse, in which case `error`
 /// carries why and the row still means something.
+#[derive(Clone)]
 pub struct ParsedTx {
     /// Txid in display order (explorer order).
     pub txid: Option<String>,
@@ -56,8 +198,12 @@ pub struct ParsedTx {
     pub version: Option<String>,
     /// Serialized size in bytes.
     pub size: usize,
-    pub inputs: Vec<Pool>,
-    pub outputs: Vec<Pool>,
+    /// The consensus branch the tx decoded under, so the ruleset is legible.
+    pub consensus_branch_id: Option<String>,
+    pub lock_time: Option<u32>,
+    pub expiry_height: Option<u32>,
+    pub inputs: Vec<PoolInput>,
+    pub outputs: Vec<PoolOutput>,
     pub value: Value,
     /// Zatoshis, present only when computable from the tx alone (no transparent
     /// inputs, whose amounts live off-chain in the spent UTXOs).
@@ -78,7 +224,11 @@ impl ParsedTx {
             .map(short_txid)
             .unwrap_or_else(|| "(no txid)".to_string());
         let version = self.version.as_deref().unwrap_or("?");
-        let pools = format!("{} → {}", pool_join(&self.inputs), pool_join(&self.outputs));
+        let pools = format!(
+            "{} → {}",
+            input_pools(&self.inputs),
+            output_pools(&self.outputs)
+        );
         let value = match self.value {
             Value::Clear(zats) => format_zats(zats),
             Value::Shielded => "shielded".to_string(),
@@ -89,15 +239,23 @@ impl ParsedTx {
     }
 }
 
-fn pool_join(pools: &[Pool]) -> String {
-    if pools.is_empty() {
-        return "none".to_string();
+/// The pools present on the input side, `+`-joined, or `none`.
+pub fn input_pools(inputs: &[PoolInput]) -> String {
+    pool_join(inputs.iter().map(|p| p.pool()))
+}
+
+/// The pools present on the output side, `+`-joined, or `none`.
+pub fn output_pools(outputs: &[PoolOutput]) -> String {
+    pool_join(outputs.iter().map(|p| p.pool()))
+}
+
+fn pool_join(pools: impl Iterator<Item = Pool>) -> String {
+    let joined = pools.map(|p| p.to_string()).collect::<Vec<_>>().join("+");
+    if joined.is_empty() {
+        "none".to_string()
+    } else {
+        joined
     }
-    pools
-        .iter()
-        .map(|p| p.to_string())
-        .collect::<Vec<_>>()
-        .join("+")
 }
 
 fn short_txid(txid: &str) -> String {
@@ -128,6 +286,9 @@ impl Serialize for ParsedTx {
         map.serialize_entry("txid", &self.txid)?;
         map.serialize_entry("version", &self.version)?;
         map.serialize_entry("size", &self.size)?;
+        map.serialize_entry("consensus_branch_id", &self.consensus_branch_id)?;
+        map.serialize_entry("lock_time", &self.lock_time)?;
+        map.serialize_entry("expiry_height", &self.expiry_height)?;
         map.serialize_entry("inputs", &self.inputs)?;
         map.serialize_entry("outputs", &self.outputs)?;
         // Value is either a clear amount or the censored marker, never both, so
@@ -143,13 +304,17 @@ impl Serialize for ParsedTx {
     }
 }
 
-/// Read a serialized transaction into its projection. `branch` is the
-/// deployment's current consensus branch id, needed to select v5/v6 rules.
-pub fn parse(data: &[u8], branch: u32) -> ParsedTx {
+/// Read a serialized transaction into its projection. The branch is derived from
+/// `height` under `params`, so a historical tx decodes under the rules active at
+/// its own height, not the tip's. A mempool tx has no height: pass the tip.
+pub fn parse<P: Parameters>(data: &[u8], height: BlockHeight, params: &P) -> ParsedTx {
     let mut view = ParsedTx {
         txid: None,
         version: None,
         size: data.len(),
+        consensus_branch_id: None,
+        lock_time: None,
+        expiry_height: None,
         inputs: Vec::new(),
         outputs: Vec::new(),
         value: Value::Unknown,
@@ -157,9 +322,7 @@ pub fn parse(data: &[u8], branch: u32) -> ParsedTx {
         error: None,
     };
 
-    // BranchId::try_from rejects an id no upgrade defines; fall back to Nu5 so a
-    // stale/zero branch still attempts a parse rather than dropping every tx.
-    let branch = BranchId::try_from(branch).unwrap_or(BranchId::Nu5);
+    let branch = BranchId::for_height(params, height);
     let tx = match Transaction::read(data, branch) {
         Ok(tx) => tx,
         Err(e) => {
@@ -170,47 +333,114 @@ pub fn parse(data: &[u8], branch: u32) -> ParsedTx {
 
     view.version = Some(format!("{:?}", tx.version()));
     view.txid = Some(tx.txid().to_string());
+    view.consensus_branch_id = Some(format!("{:?}", tx.consensus_branch_id()).to_lowercase());
+    view.lock_time = Some(tx.lock_time());
+    view.expiry_height = Some(u32::from(tx.expiry_height()));
 
+    let net = params.network_type();
     let mut no_transparent_inputs = true;
     let mut transparent_out: i64 = 0;
     let mut shielded_output = false;
+    // Net value leaving the shielded pools into the transparent pool. For a
+    // fully-shielded tx this is the fee.
+    let mut value_balance: i64 = 0;
+
     if let Some(t) = tx.transparent_bundle() {
         if !t.vin.is_empty() {
-            view.inputs.push(Pool::Transparent);
             no_transparent_inputs = false;
+            let vin = t
+                .vin
+                .iter()
+                .map(|i| TxIn {
+                    prevout_txid: i.prevout().txid().to_string(),
+                    prevout_index: i.prevout().n(),
+                    script_sig: hex::encode(&i.script_sig().0.0),
+                    sequence: i.sequence(),
+                })
+                .collect();
+            view.inputs.push(PoolInput::Transparent { vin });
         }
         if !t.vout.is_empty() {
-            view.outputs.push(Pool::Transparent);
-            transparent_out = t.vout.iter().map(|o| u64::from(o.value()) as i64).sum();
+            transparent_out = t.vout.iter().map(|o| o.value().into_u64() as i64).sum();
+            let vout = t
+                .vout
+                .iter()
+                .map(|o| TxOut {
+                    value_zat: o.value().into_u64() as i64,
+                    script_pubkey: hex::encode(&o.script_pubkey().0.0),
+                    address: o
+                        .recipient_address()
+                        .map(|a| a.to_zcash_address(net).to_string()),
+                })
+                .collect();
+            view.outputs.push(PoolOutput::Transparent { vout });
         }
     }
 
-    // Sum of shielded value balances: net value leaving the shielded pools into
-    // the transparent value pool. For a fully-shielded tx this is the fee.
-    let mut value_balance: i64 = 0;
     if let Some(s) = tx.sapling_bundle() {
+        let vb = i64::from(*s.value_balance());
+        value_balance += vb;
         if !s.shielded_spends().is_empty() {
-            view.inputs.push(Pool::Sapling);
+            let anchor = hex::encode(s.shielded_spends()[0].anchor().to_bytes());
+            let spends = s
+                .shielded_spends()
+                .iter()
+                .map(|sd| SaplingSpend {
+                    nullifier: hex::encode(sd.nullifier().0),
+                    rk: hex::encode(<[u8; 32]>::from(*sd.rk())),
+                })
+                .collect();
+            view.inputs.push(PoolInput::Sapling {
+                anchor,
+                value_balance_zat: vb,
+                spends,
+            });
         }
         if !s.shielded_outputs().is_empty() {
-            view.outputs.push(Pool::Sapling);
             shielded_output = true;
+            let outputs = s
+                .shielded_outputs()
+                .iter()
+                .map(|od| SaplingOutput {
+                    cmu: hex::encode(od.cmu().to_bytes()),
+                    ephemeral_key: hex::encode(od.ephemeral_key().0),
+                    enc_ciphertext: Blob {
+                        bytes: od.enc_ciphertext().len(),
+                    },
+                    out_ciphertext: Blob {
+                        bytes: od.out_ciphertext().len(),
+                    },
+                })
+                .collect();
+            view.outputs.push(PoolOutput::Sapling { outputs });
         }
-        value_balance += i64::from(s.value_balance());
     }
-    // Orchard/Ironwood actions carry a spend and an output each, so the pool
-    // sits on both sides whenever its bundle is present.
+
+    // Orchard and Ironwood share the action bundle type; the pool tag is the
+    // only thing that differs on the way into the view.
     if let Some(o) = tx.orchard_bundle() {
-        view.inputs.push(Pool::Orchard);
-        view.outputs.push(Pool::Orchard);
+        let (anchor, vb, flags, spends, outputs) = read_actions(o);
+        value_balance += vb;
         shielded_output = true;
-        value_balance += i64::from(o.value_balance());
+        view.inputs.push(PoolInput::Orchard {
+            anchor,
+            value_balance_zat: vb,
+            flags,
+            spends,
+        });
+        view.outputs.push(PoolOutput::Orchard { outputs });
     }
     if let Some(i) = tx.ironwood_bundle() {
-        view.inputs.push(Pool::Ironwood);
-        view.outputs.push(Pool::Ironwood);
+        let (anchor, vb, flags, spends, outputs) = read_actions(i);
+        value_balance += vb;
         shielded_output = true;
-        value_balance += i64::from(i.value_balance());
+        view.inputs.push(PoolInput::Ironwood {
+            anchor,
+            value_balance_zat: vb,
+            flags,
+            spends,
+        });
+        view.outputs.push(PoolOutput::Ironwood { outputs });
     }
 
     // The moved value is the clear output total only when nothing shielded is
@@ -227,13 +457,60 @@ pub fn parse(data: &[u8], branch: u32) -> ParsedTx {
     view
 }
 
+/// Read the fields the view wants off an Orchard-shaped bundle (Orchard or
+/// Ironwood, same type). Returns anchor hex, value balance, flags, and the
+/// per-action spend and output halves.
+fn read_actions<A, V>(
+    bundle: &orchard::Bundle<A, V>,
+) -> (String, i64, Flags, Vec<ActionSpend>, Vec<ActionOutput>)
+where
+    A: orchard::bundle::Authorization,
+    V: Copy,
+    i64: From<V>,
+{
+    let anchor = hex::encode(bundle.anchor().to_bytes());
+    let vb = i64::from(*bundle.value_balance());
+    let flags = Flags {
+        spends_enabled: bundle.flags().spends_enabled(),
+        outputs_enabled: bundle.flags().outputs_enabled(),
+    };
+    let mut spends = Vec::new();
+    let mut outputs = Vec::new();
+    for act in bundle.actions().iter() {
+        spends.push(ActionSpend {
+            nullifier: hex::encode(act.nullifier().to_bytes()),
+            rk: hex::encode(<[u8; 32]>::from(act.rk())),
+        });
+        let note = act.encrypted_note();
+        outputs.push(ActionOutput {
+            cmx: hex::encode(act.cmx().to_bytes()),
+            ephemeral_key: hex::encode(note.epk_bytes),
+            enc_ciphertext: Blob {
+                bytes: note.enc_ciphertext.len(),
+            },
+            out_ciphertext: Blob {
+                bytes: note.out_ciphertext.len(),
+            },
+        });
+    }
+    (anchor, vb, flags, spends, outputs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn params() -> ChainParams {
+        ChainParams::featurenet()
+    }
+
     #[test]
     fn unparseable_bytes_yield_a_degraded_view() {
-        let view = parse(&[0xff, 0x00, 0x13, 0x37], 0);
+        let view = parse(
+            &[0xff, 0x00, 0x13, 0x37],
+            BlockHeight::from_u32(1),
+            &params(),
+        );
         assert!(view.txid.is_none());
         assert!(view.error.is_some());
         assert!(view.fee.is_none());
@@ -246,15 +523,32 @@ mod tests {
             txid: Some("ab".into()),
             version: Some("V5".into()),
             size: 100,
-            inputs: vec![Pool::Transparent],
-            outputs: vec![Pool::Transparent],
+            consensus_branch_id: Some("nu5".into()),
+            lock_time: Some(0),
+            expiry_height: Some(0),
+            inputs: vec![PoolInput::Transparent {
+                vin: vec![TxIn {
+                    prevout_txid: "cd".into(),
+                    prevout_index: 0,
+                    script_sig: "".into(),
+                    sequence: u32::MAX,
+                }],
+            }],
+            outputs: vec![PoolOutput::Transparent {
+                vout: vec![TxOut {
+                    value_zat: 500_000,
+                    script_pubkey: "76a914".into(),
+                    address: Some("t1abc".into()),
+                }],
+            }],
             value: Value::Clear(500_000),
             fee: None,
             error: None,
         };
         let json = serde_json::to_string(&view).unwrap();
         assert!(json.contains("\"value_zat\":500000"));
-        assert!(json.contains("\"inputs\":[\"transparent\"]"));
+        assert!(json.contains("\"pool\":\"transparent\""));
+        assert!(json.contains("\"consensus_branch_id\":\"nu5\""));
     }
 
     #[test]
@@ -271,8 +565,11 @@ mod tests {
             txid: Some("ab".repeat(32)),
             version: Some("V5".into()),
             size: 500,
-            inputs: vec![Pool::Transparent],
-            outputs: vec![Pool::Transparent],
+            consensus_branch_id: Some("nu5".into()),
+            lock_time: Some(0),
+            expiry_height: Some(0),
+            inputs: vec![PoolInput::Transparent { vin: Vec::new() }],
+            outputs: vec![PoolOutput::Transparent { vout: Vec::new() }],
             value: Value::Clear(500_000),
             fee: Some(10_000),
             error: None,
@@ -285,7 +582,7 @@ mod tests {
 
     #[test]
     fn summary_of_a_failed_parse_names_no_txid() {
-        let line = parse(&[0xff, 0x00], 0).summary();
+        let line = parse(&[0xff, 0x00], BlockHeight::from_u32(1), &params()).summary();
         assert!(line.contains("(no txid)"));
         assert!(line.contains("unparseable"));
     }
@@ -296,8 +593,21 @@ mod tests {
             txid: Some("cd".into()),
             version: Some("V6".into()),
             size: 2000,
-            inputs: vec![Pool::Orchard, Pool::Ironwood],
-            outputs: vec![Pool::Orchard, Pool::Ironwood],
+            consensus_branch_id: Some("nu6_3".into()),
+            lock_time: Some(0),
+            expiry_height: Some(0),
+            inputs: vec![PoolInput::Orchard {
+                anchor: "00".into(),
+                value_balance_zat: 0,
+                flags: Flags {
+                    spends_enabled: true,
+                    outputs_enabled: true,
+                },
+                spends: Vec::new(),
+            }],
+            outputs: vec![PoolOutput::Orchard {
+                outputs: Vec::new(),
+            }],
             value: Value::Shielded,
             fee: Some(20_000),
             error: None,
@@ -305,5 +615,6 @@ mod tests {
         let json = serde_json::to_string(&view).unwrap();
         assert!(json.contains("\"value\":\"shielded\""));
         assert!(json.contains("\"fee\":20000"));
+        assert!(json.contains("\"pool\":\"orchard\""));
     }
 }

@@ -1,6 +1,5 @@
-//! Colors and the shimmer math. The `lerp`/`pulse`/`wave` primitives and the
-//! per-character title shimmer are lifted from `wayfinder-tui`: a cosine pulse
-//! whose phase drifts per glyph, so the bright point travels across the string.
+//! Colors and the shimmer math: a cosine pulse whose phase drifts per glyph, so
+//! the bright point travels across the title string.
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
@@ -15,6 +14,15 @@ pub const BG: Rgb = (0x0d, 0x11, 0x17);
 pub const FAINT: Rgb = (0x55, 0x60, 0x6b);
 pub const TEXT: Rgb = (0xc8, 0xd2, 0xdc);
 pub const WARN: Rgb = (0xf2, 0xb0, 0x5e);
+// Health indicators: a settled green and an alarm red.
+pub const GOOD: Rgb = (0x5f, 0xd0, 0x8a);
+pub const BAD: Rgb = (0xf2, 0x60, 0x6e);
+
+// Per-pool hues, so a pool reads the same everywhere it appears.
+pub const POOL_TRANSPARENT: Rgb = (0x7f, 0xb0, 0xff);
+pub const POOL_SAPLING: Rgb = (0x5f, 0xd0, 0x8a);
+pub const POOL_ORCHARD: Rgb = (0xf2, 0xb0, 0x5e);
+pub const POOL_IRONWOOD: Rgb = (0xc7, 0x92, 0xea);
 
 pub fn color(rgb: Rgb) -> Color {
     Color::Rgb(rgb.0, rgb.1, rgb.2)
