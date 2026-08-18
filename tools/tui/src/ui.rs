@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::app::{App, Phase, Row};
 use crate::theme::{self, color};
-use lightwallet_txview::{Pool, Value, format_zats};
+use lightwallet_txview::{Fee, InputTotal, Pool, Value, format_zats};
 
 pub fn draw(f: &mut Frame, app: &App) {
     let [header, body, footer] = Layout::vertical([
@@ -165,6 +165,28 @@ fn value_str(value: &Value) -> String {
     }
 }
 
+/// The fee, with a word for each state that has no number yet: still resolving
+/// its transparent inputs, or a lookup that failed. Never a wrong amount.
+fn fee_str(fee: &Fee) -> String {
+    match fee {
+        Fee::Known(zats) => format_zats(*zats),
+        Fee::Pending => "resolving…".to_string(),
+        Fee::Unresolvable => "?".to_string(),
+        Fee::Unknown => "—".to_string(),
+    }
+}
+
+/// The transparent input total, or `None` when the tx has no transparent inputs
+/// and there is nothing to show.
+fn input_total_str(total: &InputTotal) -> Option<String> {
+    match total {
+        InputTotal::None => None,
+        InputTotal::Pending => Some("resolving…".to_string()),
+        InputTotal::Known(zats) => Some(format_zats(*zats)),
+        InputTotal::Unresolvable => Some("?".to_string()),
+    }
+}
+
 fn value_span(value: &Value, text: String) -> Span<'static> {
     let rgb = match value {
         Value::Shielded => theme::WARN,
@@ -194,10 +216,12 @@ fn render_detail(f: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::from(format!("inputs   {}", pool_list(&tx.inputs))));
     lines.push(Line::from(format!("outputs  {}", pool_list(&tx.outputs))));
     lines.push(Line::from(format!("value    {}", value_str(&tx.value))));
-    lines.push(Line::from(format!(
-        "fee      {}",
-        tx.fee.map(format_zats).unwrap_or_else(|| "—".to_string())
-    )));
+    // The transparent input total, shown only when there are transparent inputs
+    // to resolve, so a fully-shielded tx's pane stays uncluttered.
+    if let Some(text) = input_total_str(&tx.input_total) {
+        lines.push(Line::from(format!("inputs   {text}")));
+    }
+    lines.push(Line::from(format!("fee      {}", fee_str(&tx.fee()))));
     lines.push(Line::from(format!(
         "seen     {:.0}s ago",
         row.first_seen.elapsed().as_secs_f32()
@@ -247,7 +271,7 @@ fn truncate_txid(txid: &str) -> String {
 mod tests {
     use super::*;
     use crate::app::{App, Row, Update};
-    use lightwallet_txview::ParsedTx;
+    use lightwallet_txview::{InputTotal, ParsedTx};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use std::time::Instant;
@@ -285,7 +309,7 @@ mod tests {
     fn a_row_shows_its_pools() {
         let mut app = App::new();
         app.apply(Update::Phase(Phase::Live));
-        app.apply(Update::Tx(Row {
+        app.apply(Update::Tx(Box::new(Row {
             seq: 0,
             first_seen: Instant::now(),
             tx: ParsedTx {
@@ -295,10 +319,13 @@ mod tests {
                 inputs: vec![Pool::Sapling],
                 outputs: vec![Pool::Orchard],
                 value: Value::Shielded,
-                fee: Some(10_000),
+                vout_values: Vec::new(),
+                prevouts: Vec::new(),
+                input_total: InputTotal::None,
+                fee_base: Some(10_000),
                 error: None,
             },
-        }));
+        })));
         let out = render(&app);
         assert!(out.contains("sapling"));
         assert!(out.contains("orchard"));
