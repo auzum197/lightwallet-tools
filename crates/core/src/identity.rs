@@ -4,7 +4,7 @@
 //! a request that names an identity cannot leak onto the sync channel and the
 //! wallet's partition of its own activity is expressed by how many identity
 //! clients it constructs. As with
-//! `streamer.rs`, one macro emits the same surface for both variants.
+//! `indexer_methods.rs`, one macro emits the same surface for both variants.
 
 /// Emit the identity-bearing RPC surface as inherent methods on `$client`,
 /// with all message types resolved through the `$proto` crate. `$client` must
@@ -15,14 +15,14 @@ macro_rules! impl_identity_methods {
             /// The full (not compact) transaction with the given txid.
             pub async fn get_transaction(
                 &self,
-                txid: Vec<u8>,
+                txid: $crate::Txid,
             ) -> $crate::error::Result<$proto::RawTransaction> {
                 let mut client = self.client.clone();
                 Ok(client
                     .get_transaction($proto::TxFilter {
                         block: None,
                         index: 0,
-                        hash: txid,
+                        hash: txid.into_bytes(),
                     })
                     .await?
                     .into_inner())
@@ -31,11 +31,14 @@ macro_rules! impl_identity_methods {
             /// Submit a serialized transaction to the network.
             pub async fn send_transaction(
                 &self,
-                data: Vec<u8>,
+                data: $crate::TxBytes,
             ) -> $crate::error::Result<$proto::SendResponse> {
                 let mut client = self.client.clone();
                 Ok(client
-                    .send_transaction($proto::RawTransaction { data, height: 0 })
+                    .send_transaction($proto::RawTransaction {
+                        data: data.into_bytes(),
+                        height: 0,
+                    })
                     .await?
                     .into_inner())
             }
@@ -57,9 +60,7 @@ macro_rules! impl_identity_methods {
             > {
                 let mut client = self.client.clone();
                 let stream = client
-                    .get_taddress_txids($crate::streamer::taddr_filter!(
-                        $proto, address, start, end
-                    ))
+                    .get_taddress_txids($crate::request::taddr_filter!($proto, address, start, end))
                     .await?
                     .into_inner();
                 Ok($crate::error::wrap_stream(stream))
@@ -80,7 +81,7 @@ macro_rules! impl_identity_methods {
             > {
                 let mut client = self.client.clone();
                 let stream = client
-                    .get_taddress_transactions($crate::streamer::taddr_filter!(
+                    .get_taddress_transactions($crate::request::taddr_filter!(
                         $proto, address, start, end
                     ))
                     .await?

@@ -7,10 +7,10 @@
 use futures_util::StreamExt;
 use lightwallet_core::{
     CanonicalIdentityClient, CanonicalIndexerClient, CompactBlockHeader, CrosslinkIdentityClient,
-    CrosslinkIndexerClient, IdentityTransport, IndexerClient, NetworkParams, is_continuous,
+    CrosslinkIndexerClient, IdentityTransport, IndexerClient, NetworkParams, TxBytes, Txid,
 };
 use lightwallet_proto_crosslink::BondInfoResponse;
-use lightwallet_test_support::{Rpc, canonical, crosslink, mock_hash};
+use lightwallet_test_support::{Rpc, canonical, crosslink, is_continuous, mock_hash};
 use std::collections::BTreeMap;
 use tonic::{Code, Status};
 
@@ -33,7 +33,7 @@ async fn sync_to_tip<I: IndexerClient>(indexer: &I, start: u64) -> u64 {
         let block = block.unwrap();
         block.block_hash().unwrap();
         if let Some(prev) = &prev {
-            assert!(is_continuous::<I>(prev, &block));
+            assert!(is_continuous(prev, &block));
         }
         prev = Some(block);
         seen += 1;
@@ -229,11 +229,17 @@ async fn get_transaction_round_trips_and_unknown_txid_is_not_found() {
     let client =
         CanonicalIdentityClient::new(IdentityTransport::dedicated(canonical::serve(mock).await));
 
-    let fetched = client.get_transaction(vec![1; 32]).await.unwrap();
+    let fetched = client
+        .get_transaction(Txid::new(vec![1; 32]))
+        .await
+        .unwrap();
     assert_eq!(fetched.data, vec![0xaa; 10]);
     assert_eq!(fetched.height, 7);
 
-    let err = client.get_transaction(vec![2; 32]).await.unwrap_err();
+    let err = client
+        .get_transaction(Txid::new(vec![2; 32]))
+        .await
+        .unwrap_err();
     assert_eq!(err.code(), Some(Code::NotFound));
     assert!(!err.retryable());
 }
@@ -381,9 +387,7 @@ async fn genesis_block_carries_an_all_zero_prev_hash() {
     assert_eq!(genesis.prev_block_hash().unwrap(), [0u8; 32]);
 
     let next = indexer.get_block(1).await.unwrap();
-    assert!(is_continuous::<
-        CanonicalIndexerClient<tonic::transport::Channel>,
-    >(&genesis, &next));
+    assert!(is_continuous(&genesis, &next));
 }
 
 #[tokio::test]
@@ -410,14 +414,13 @@ async fn consumer_detects_a_reorg_through_continuity() {
     });
     chain.replace_chain(fork);
 
-    type Ix = CanonicalIndexerClient<tonic::transport::Channel>;
     let new_4 = indexer.get_block(4).await.unwrap();
-    assert!(!is_continuous::<Ix>(&held_3, &new_4));
+    assert!(!is_continuous(&held_3, &new_4));
 
     let new_3 = indexer.get_block(3).await.unwrap();
     let unchanged_2 = indexer.get_block(2).await.unwrap();
-    assert!(is_continuous::<Ix>(&unchanged_2, &new_3));
-    assert!(is_continuous::<Ix>(&new_3, &new_4));
+    assert!(is_continuous(&unchanged_2, &new_3));
+    assert!(is_continuous(&new_3, &new_4));
 }
 
 #[tokio::test]
@@ -454,7 +457,10 @@ async fn sent_transactions_are_observable_on_the_mock() {
     let client =
         CanonicalIdentityClient::new(IdentityTransport::dedicated(canonical::serve(mock).await));
 
-    let resp = client.send_transaction(vec![0xab; 40]).await.unwrap();
+    let resp = client
+        .send_transaction(TxBytes::new(vec![0xab; 40]))
+        .await
+        .unwrap();
     assert_eq!(resp.error_code, 0);
 
     let sent = inbox.sent();

@@ -7,6 +7,20 @@ use std::fmt;
 /// variants. Nothing else is forced into this shape. A variant whose block
 /// lacks these fields, or whose `height` means something structurally
 /// different, simply does not implement the trait.
+///
+/// Deciding what a broken chain means (reorg depth, how far to rewind) is the
+/// consumer's sync policy. The one primitive underneath it, "does `cur` sit
+/// directly on `prev`", is a two-field comparison. Subtract with `checked_sub`,
+/// not `-`: `cur.height()` comes off the wire, and a genesis block (height 0)
+/// or a hostile `u64::MAX` would otherwise underflow.
+///
+/// ```
+/// use lightwallet_core::CompactBlockHeader;
+///
+/// fn extends(prev: &impl CompactBlockHeader, cur: &impl CompactBlockHeader) -> bool {
+///     cur.height().checked_sub(1) == Some(prev.height()) && cur.prev_hash() == prev.hash()
+/// }
+/// ```
 pub trait CompactBlockHeader {
     /// Block height, consecutive along a chain.
     fn height(&self) -> u64;

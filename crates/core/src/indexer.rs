@@ -50,12 +50,3 @@ pub trait IndexerClient {
     /// The per-deployment parameters this client was constructed with.
     fn network_params(&self) -> &NetworkParams;
 }
-
-/// One generic function checks header continuity across variants with no shared
-/// block type and no conversion code. Generic over the client to prove its
-/// associated `Block` type carries the capability through. The subtraction is
-/// checked because heights come from the server: a block at height 0 extends
-/// nothing, and a hostile `u64::MAX` must not panic a debug build.
-pub fn is_continuous<I: IndexerClient>(prev: &I::Block, cur: &I::Block) -> bool {
-    cur.height().checked_sub(1) == Some(prev.height()) && cur.prev_hash() == prev.hash()
-}
