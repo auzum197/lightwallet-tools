@@ -7,12 +7,9 @@ license.workspace = true
 publish = false
 
 [lib]
-# cdylib for the Android/iOS shared object, staticlib for iOS linking, lib so
-# the bindgen bin and tests can pull the crate in-process.
 crate-type = ["cdylib", "staticlib", "lib"]
 name = "lightwallet_ffi"
 
-# `cargo run --bin uniffi-bindgen generate ...` emits the Kotlin/Swift glue.
 [[bin]]
 name = "uniffi-bindgen"
 path = "src/bin/uniffi-bindgen.rs"

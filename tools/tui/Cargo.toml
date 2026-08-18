@@ -10,11 +10,7 @@ name = "lwtui"
 path = "src/main.rs"
 
 [dependencies]
-# Both variants on: the monitor points at either surface at runtime via
-# --variant, the same stance lwcli takes.
 lightwallet-core = { path = "../../crates/core", features = ["canonical", "crosslink"] }
-# The shared transaction projection: lwtui and lwcli parse
-# through it identically. This is where the zcash_primitives weight lives now.
 lightwallet-txview = { path = "../txview" }
 anyhow.workspace = true
 clap.workspace = true

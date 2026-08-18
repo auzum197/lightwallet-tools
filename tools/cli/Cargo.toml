@@ -11,16 +11,11 @@ name = "lwcli"
 path = "src/main.rs"
 
 [features]
-# The transports are default-on features rather than unconditional deps
-# because arti roughly doubles the CLI's build. The --transport enum values
-# are cfg-gated to match, so a build without a feature never advertises a
-# route the binary can't take (clap rejects the value outright).
 default = ["tor", "nym"]
 tor = ["dep:lightwallet-transport-tor", "dep:arti-client"]
 nym = ["dep:lightwallet-transport-nym"]
 
 [dependencies]
-# Both variants on: the CLI is a point-at-anything debug tool
 lightwallet-core = { path = "../../crates/core", features = [
     "canonical",
     "crosslink",
@@ -29,8 +24,6 @@ lightwallet-proto-canonical = { path = "../../crates/canonical" }
 lightwallet-proto-crosslink = { path = "../../crates/crosslink" }
 lightwallet-transport-tor = { path = "../../crates/transport-tor", optional = true }
 lightwallet-transport-nym = { path = "../../crates/transport-nym", optional = true }
-# The shared transaction projection: lwcli interprets opaque payloads through it,
-# the same parse lwtui uses.
 lightwallet-txview = { path = "../txview" }
 anyhow.workspace = true
 arti-client = { workspace = true, optional = true }
