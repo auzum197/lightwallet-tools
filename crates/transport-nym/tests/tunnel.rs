@@ -12,17 +12,16 @@
 //! type byte explicitly.
 
 use futures_util::StreamExt;
-use lightwallet_core::{
-    CanonicalIndexerClient, CompactBlockHeader, IndexerClient, NetworkParams, is_continuous,
-};
+use lightwallet_core::{CanonicalIndexerClient, CompactBlockHeader, IndexerClient, NetworkParams};
 use lightwallet_proto_canonical::compact_tx_streamer_server::CompactTxStreamerServer;
 use lightwallet_test_support::canonical::{MockStreamer, linked_blocks};
+use lightwallet_test_support::is_continuous;
 use lightwallet_test_support::socks5::{REPLY_REFUSED, REPLY_SUCCEEDED, spawn_socks5};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use tokio::net::TcpListener;
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::Endpoint;
 
 const ENDPOINT: &str = "http://lightwalletd.test:9067";
 
@@ -72,9 +71,7 @@ async fn grpc_flows_through_the_tunnel() {
         let block = block.unwrap();
         block.block_hash().unwrap();
         if let Some(prev) = &prev {
-            assert!(is_continuous::<CanonicalIndexerClient<Channel>>(
-                prev, &block
-            ));
+            assert!(is_continuous(prev, &block));
         }
         prev = Some(block);
         seen += 1;

@@ -12,5 +12,6 @@ hyper-util.workspace = true
 tokio = { workspace = true, features = ["io-util", "net", "rt"] }
 tonic.workspace = true
 tower.workspace = true
+lightwallet-core = { path = "../core" }
 lightwallet-proto-canonical = { path = "../canonical" }
 lightwallet-proto-crosslink = { path = "../crosslink" }

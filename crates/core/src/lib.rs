@@ -101,18 +101,22 @@ mod header;
 #[cfg(any(feature = "canonical", feature = "crosslink"))]
 mod identity;
 mod indexer;
+#[cfg(any(feature = "canonical", feature = "crosslink"))]
+mod indexer_methods;
 mod params;
 #[cfg(any(feature = "canonical", feature = "crosslink"))]
-mod streamer;
+mod request;
 mod transport;
+mod types;
 
 pub use error::{Error, MalformedInfo, Result};
 pub use header::{CompactBlockHeader, HashLen};
-pub use indexer::{IndexerClient, is_continuous};
+pub use indexer::IndexerClient;
 pub use params::{LightdInfoView, NetworkParams};
 pub use transport::GrpcTransport;
 #[cfg(any(feature = "canonical", feature = "crosslink"))]
 pub use transport::IdentityTransport;
+pub use types::{TxBytes, Txid};
 
 // tonic types (Status, Code, Channel, Endpoint) are load-bearing in this
 // crate's API, so the whole crate is coupled to it; a consumer pinning their own
@@ -139,39 +143,12 @@ mod crosslink;
 #[cfg(feature = "crosslink")]
 pub use crosslink::{CrosslinkIdentityClient, CrosslinkIndexerClient};
 
-// The same generic function runs against both variants' block types with no
-// conversion and no shared struct, exercised here at the type level.
+// Both variants get the same inherent surface from one macro, checked here at
+// the type level.
 #[cfg(all(test, feature = "canonical", feature = "crosslink"))]
 mod tests {
     use super::*;
     use tonic::transport::Channel;
-
-    #[test]
-    fn continuity_holds_across_both_variants() {
-        let a = lightwallet_proto_canonical::CompactBlock {
-            height: 100,
-            hash: vec![7u8; 32],
-            ..Default::default()
-        };
-        let b = lightwallet_proto_canonical::CompactBlock {
-            height: 101,
-            prev_hash: vec![7u8; 32],
-            ..Default::default()
-        };
-        assert!(is_continuous::<CanonicalIndexerClient<Channel>>(&a, &b));
-
-        let c = lightwallet_proto_crosslink::CompactBlock {
-            height: 100,
-            hash: vec![9u8; 32],
-            ..Default::default()
-        };
-        let d = lightwallet_proto_crosslink::CompactBlock {
-            height: 101,
-            prev_hash: vec![9u8; 32],
-            ..Default::default()
-        };
-        assert!(is_continuous::<CrosslinkIndexerClient<Channel>>(&c, &d));
-    }
 
     // The macros are supposed to give both variants the same inherent surface
     // on each type. Naming a method as a function item on each variant fails
@@ -215,63 +192,6 @@ mod tests {
             // on the identity client.
             CrosslinkIdentityClient::<Channel>::request_faucet_donation,
         );
-    }
-
-    #[test]
-    fn continuity_rejects_a_skipped_height() {
-        let a = lightwallet_proto_canonical::CompactBlock {
-            height: 100,
-            hash: vec![7u8; 32],
-            ..Default::default()
-        };
-        let b = lightwallet_proto_canonical::CompactBlock {
-            height: 102,
-            prev_hash: vec![7u8; 32],
-            ..Default::default()
-        };
-        assert!(!is_continuous::<CanonicalIndexerClient<Channel>>(&a, &b));
-    }
-
-    #[test]
-    fn continuity_rejects_a_repeated_height() {
-        let a = lightwallet_proto_canonical::CompactBlock {
-            height: 100,
-            hash: vec![7u8; 32],
-            ..Default::default()
-        };
-        let b = lightwallet_proto_canonical::CompactBlock {
-            height: 100,
-            prev_hash: vec![7u8; 32],
-            ..Default::default()
-        };
-        assert!(!is_continuous::<CanonicalIndexerClient<Channel>>(&a, &b));
-    }
-
-    #[test]
-    fn continuity_rejects_a_prev_hash_mismatch_at_the_next_height() {
-        let a = lightwallet_proto_canonical::CompactBlock {
-            height: 100,
-            hash: vec![7u8; 32],
-            ..Default::default()
-        };
-        let b = lightwallet_proto_canonical::CompactBlock {
-            height: 101,
-            prev_hash: vec![8u8; 32],
-            ..Default::default()
-        };
-        assert!(!is_continuous::<CanonicalIndexerClient<Channel>>(&a, &b));
-
-        let c = lightwallet_proto_crosslink::CompactBlock {
-            height: 100,
-            hash: vec![9u8; 32],
-            ..Default::default()
-        };
-        let d = lightwallet_proto_crosslink::CompactBlock {
-            height: 101,
-            prev_hash: vec![10u8; 32],
-            ..Default::default()
-        };
-        assert!(!is_continuous::<CrosslinkIndexerClient<Channel>>(&c, &d));
     }
 
     #[test]

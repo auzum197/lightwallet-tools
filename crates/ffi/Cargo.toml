@@ -1,0 +1,29 @@
+[package]
+name = "lightwallet-ffi"
+description = "UniFFI bindings over lightwallet-core for foreign consumers (Kotlin, Swift)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+# cdylib for the Android/iOS shared object, staticlib for iOS linking, lib so
+# the bindgen bin and tests can pull the crate in-process.
+crate-type = ["cdylib", "staticlib", "lib"]
+name = "lightwallet_ffi"
+
+# `cargo run --bin uniffi-bindgen generate ...` emits the Kotlin/Swift glue.
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+futures-util.workspace = true
+hex.workspace = true
+lightwallet-core = { version = "0.1.0", path = "../core", features = ["canonical", "crosslink", "tls"] }
+thiserror = "2.0.19"
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+uniffi = { version = "0.32.0", features = ["cli", "tokio"] }

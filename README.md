@@ -1,13 +1,10 @@
 # Zcash Lightwallet Protocol Layer
 
-Rust tooling for lightwalletd-style Zcash indexers, on both sides of the
-wire. The client crates put two protocol variants behind one generic API,
-CANONICAL ([`zcash/lightwallet-protocol`](https://github.com/zcash/lightwallet-protocol))
-and CROSSLINK (the Crosslink fork's additive mirror), and route them
-directly or through Tor or Nym without changing call sites. The darkside
-crates serve that same wire surface from a deterministic synthetic chain.
-A wallet pointed at one syncs against a fabricated history exactly as it
-would against a real indexer.
+Rust client tooling for lightwalletd-style Zcash indexers. The client crates
+put two protocol variants behind one generic API, CANONICAL
+([`zcash/lightwallet-protocol`](https://github.com/zcash/lightwallet-protocol))
+and CROSSLINK (the Crosslink fork's additive mirror), and route them directly
+or through Tor or Nym without changing call sites.
 
 > **Status: heavily experimental, heavy LLM-authored code right now.** Treat
 > most of this repo as a moving target that can change or break without notice.
@@ -15,16 +12,13 @@ would against a real indexer.
 > [`lightwallet-core`](crates/core),
 > [`lightwallet-proto-canonical`](crates/canonical), and
 > [`lightwallet-proto-crosslink`](crates/crosslink). Everything else (the
-> transports, CLI, and the darkside tooling) is in flux.
+> transports and CLI) is in flux.
 
 ```mermaid
 flowchart LR
   client["client stack<br/>lwcli, lightwallet-core"]
   bindings["variant bindings<br/>canonical, crosslink"]
-  subgraph endpoints["indexer endpoints"]
-    real["lightwalletd / zaino"]
-    dark["darkside<br/>synthetic chain"]
-  end
+  endpoints["indexer endpoints<br/>lightwalletd / zaino"]
 
   client --> bindings
   client ==>|"gRPC over direct, Tor, or Nym"| endpoints
@@ -39,11 +33,6 @@ flowchart LR
 - [`lightwallet-transport-nym`](crates/transport-nym): tonic channels through the Nym mixnet via a running `nym-socks5-client` (experimental).
 - [`lightwallet-cli`](crates/cli): `lwcli`, a one-shot point-at-anything debug client covering the full RPC surface.
 - [`lightwallet-test-support`](crates/test-support): in-memory mock endpoints with fault injection, plus a SOCKS5 test server.
-- [`darkside-chain`](crates/darkside-chain): a deterministic Zcash chain state machine with no network, clock, or I/O.
-- [`darkside-decl`](crates/darkside-decl): parses authored `.decl` files into chains and scenarios.
-- [`darkside-serve`](crates/darkside-serve): serves both variants' streamer surfaces over one darkside chain, plus the HTTP control surface and the live and scenario drivers.
-- [`darkside`](crates/darkside): the `darkside` binary, a live network-flavored synthetic chain served over TCP.
-- [`darkside-repl`](crates/darkside-repl): an interactive console that drives a running darkside (mine, fund, reorg, retime) over its control surface.
 
 ## Development
 

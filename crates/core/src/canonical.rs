@@ -1,6 +1,6 @@
 use crate::error::wrap_stream;
 use crate::identity::{impl_identity_ctors, impl_identity_methods};
-use crate::streamer::impl_streamer_methods;
+use crate::indexer_methods::impl_indexer_methods;
 use crate::transport::GrpcTransport;
 use crate::{CompactBlockHeader, IndexerClient, NetworkParams, Result};
 use futures_util::stream::BoxStream;
@@ -54,7 +54,7 @@ impl<T: GrpcTransport> CanonicalIndexerClient<T> {
     }
 }
 
-impl_streamer_methods!(CanonicalIndexerClient, proto);
+impl_indexer_methods!(CanonicalIndexerClient, proto);
 
 /// One unlinkability domain on the CANONICAL variant: the identity-bearing
 /// RPCs, over a transport of their own. Mint one per identity the wallet

@@ -13,13 +13,12 @@
 //! transport if the sync rate holds up against the milestone 3.6 bar.
 
 use futures_util::StreamExt;
-use lightwallet_core::{
-    CanonicalIndexerClient, CompactBlockHeader, IndexerClient, NetworkParams, is_continuous,
-};
+use lightwallet_core::{CanonicalIndexerClient, CompactBlockHeader, IndexerClient, NetworkParams};
+use lightwallet_test_support::is_continuous;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::time::Instant;
-use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
+use tonic::transport::{ClientTlsConfig, Endpoint};
 
 #[tokio::test]
 #[ignore = "live network (running nym-socks5-client + canonical endpoint)"]
@@ -69,7 +68,7 @@ async fn canonical_indexer_over_nym() {
         block.block_hash().expect("32-byte block hash");
         if let Some(prev) = &prev {
             assert!(
-                is_continuous::<CanonicalIndexerClient<Channel>>(prev, &block),
+                is_continuous(prev, &block),
                 "hash chain broke at height {}",
                 block.height()
             );

@@ -15,8 +15,9 @@
 use futures_util::StreamExt;
 use lightwallet_core::{
     CanonicalIndexerClient, CompactBlockHeader, CrosslinkIndexerClient, IndexerClient,
-    NetworkParams, is_continuous,
+    NetworkParams,
 };
+use lightwallet_test_support::is_continuous;
 use std::collections::BTreeMap;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 
@@ -62,7 +63,7 @@ async fn scan_live_tip<I: IndexerClient>(indexer: &I, window: u64) {
         block.prev_block_hash().expect("32-byte prev hash");
         if let Some(prev) = &prev {
             assert!(
-                is_continuous::<I>(prev, &block),
+                is_continuous(prev, &block),
                 "hash chain broke at height {}",
                 block.height()
             );

@@ -9,12 +9,29 @@ snapshot_url := "https://raw.githubusercontent.com/ShieldedLabs/crosslink_monoli
 default:
     @just --list
 
-# Offline checks: protos compile, overlay matches canonical plus additions, workspace builds
-check: proto-check mirror-check rpc-coverage-check cargo-check feature-check
+# Offline checks: format, lint, protos compile, overlay matches canonical, workspace builds
+check: fmt-check lint secure-check proto-check mirror-check rpc-coverage-check cargo-check feature-check
+
+# Formatting matches rustfmt
+fmt-check:
+    cargo fmt --all --check
+
+# Clippy across every target, warnings are errors
+lint:
+    cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+# No unwrap/expect/panic in production paths
+secure-check:
+    cargo clippy --workspace --exclude lightwallet-test-support --all-features -- -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic
+
+# Known-vulnerability scan against the RustSec advisory DB. Needs network and
+# `cargo install cargo-audit`
+audit:
+    cargo audit
 
 # Workspace compiles, both variants (proto crates regenerate bindings via build.rs)
 cargo-check:
-    cargo check --workspace --all-targets --all-features
+    cargo check --workspace --all-targets --all-features --locked
 
 # Every feature combination compiles, including neither variant and the reduced CLI
 feature-check:
@@ -24,7 +41,7 @@ feature-check:
 
 # Offline test suite: unit tests + the in-memory mock harness (no network)
 test:
-    cargo nextest run --workspace --all-features
+    cargo nextest run --workspace --all-features --locked
 
 # Line/region coverage over the offline suite. Extra args pass through,
 # e.g. `just coverage --html --open` for annotated source.
