@@ -9,9 +9,10 @@ use lightwallet_txview::ParsedTx;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 /// A mempool transaction as the monitor tracks it: the shared projection plus
-/// the two view-local facts txview doesn't carry. `seq` is assigned on arrival
-/// and is what a selection binds to, so incoming rows never move the cursor off
-/// the tx being read.
+/// the two view-local facts txview doesn't carry. `seq` is assigned by the
+/// producer and is what both a selection and a later value patch bind to, so
+/// incoming rows never move the cursor off the tx being read and a resolved
+/// input total lands on the right row.
 pub struct Row {
     pub seq: u64,
     pub first_seen: Instant,
@@ -28,8 +29,18 @@ pub enum Phase {
 
 /// A message from the network task.
 pub enum Update {
-    /// A new mempool transaction.
-    Tx(Row),
+    /// A new mempool transaction. `seq` is already assigned by the producer.
+    /// Boxed: it dwarfs the other variants, and they share this channel at the
+    /// same rate under a refill.
+    Tx(Box<Row>),
+    /// A transparent input total, followed to its funding outputs after the row
+    /// arrived. `total` is `Some` when every prevout resolved, `None` when one
+    /// could not be, which shows as unresolvable rather than a wrong fee. Lands
+    /// on the row with this `seq`, or is dropped if that row is already gone.
+    ValueResolved {
+        seq: u64,
+        total: Option<i64>,
+    },
     /// A block boundary: clear the pending set and adopt the new tip. Carries
     /// the tip block's miner timestamp when the server gave one.
     Block {
@@ -54,7 +65,6 @@ pub struct App {
     pub detail: bool,
     /// The `seq` of the selected row. Stable across prepends and clears.
     selected: Option<u64>,
-    next_seq: u64,
     start: Instant,
 }
 
@@ -72,7 +82,6 @@ impl App {
             paused: false,
             detail: false,
             selected: None,
-            next_seq: 0,
             start: now,
         }
     }
@@ -92,11 +101,16 @@ impl App {
 
     pub(crate) fn apply(&mut self, update: Update) {
         match update {
-            Update::Tx(mut row) => {
-                row.seq = self.next_seq;
-                self.next_seq += 1;
-                self.rows.push_front(row);
+            Update::Tx(row) => {
+                self.rows.push_front(*row);
                 self.rows.truncate(MAX_ROWS);
+            }
+            Update::ValueResolved { seq, total } => {
+                // A late patch for a row cleared at a block boundary has no
+                // target; dropping it is correct, the tx is gone.
+                if let Some(row) = self.rows.iter_mut().find(|r| r.seq == seq) {
+                    row.tx.resolve(total);
+                }
             }
             Update::Block { tip, mined_unix } => {
                 // Flash only on a real new block, not the first connect (tip 0)
@@ -163,23 +177,32 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lightwallet_txview::{ParsedTx, Pool, Value};
+    use lightwallet_txview::{InputTotal, OutPoint, parse};
 
-    fn tx_row() -> Row {
-        Row {
-            seq: 0,
+    /// A shielded row with no transparent inputs, addressed by `seq`.
+    fn tx_row(seq: u64) -> Box<Row> {
+        Box::new(Row {
+            seq,
             first_seen: Instant::now(),
-            tx: ParsedTx {
-                txid: Some("a".repeat(64)),
-                version: Some("V6".into()),
-                size: 100,
-                inputs: vec![Pool::Orchard],
-                outputs: vec![Pool::Orchard],
-                value: Value::Shielded,
-                fee: Some(1_000),
-                error: None,
-            },
-        }
+            // Real bytes are hard to synthesize; a degraded parse gives a valid
+            // ParsedTx and these tests only exercise the row list, not values.
+            tx: parse(&[0xff, 0x00], 0),
+        })
+    }
+
+    /// A row whose transparent input total is awaiting resolution.
+    fn pending_row(seq: u64) -> Box<Row> {
+        let mut tx = parse(&[0xff, 0x00], 0);
+        tx.prevouts = vec![OutPoint {
+            hash: [1u8; 32],
+            index: 0,
+        }];
+        tx.input_total = InputTotal::Pending;
+        Box::new(Row {
+            seq,
+            first_seen: Instant::now(),
+            tx,
+        })
     }
 
     fn press(code: KeyCode) -> KeyEvent {
@@ -187,22 +210,41 @@ mod tests {
     }
 
     #[test]
-    fn newest_row_is_front_with_incrementing_seqs() {
+    fn newest_row_is_front_carrying_its_producer_seq() {
         let mut app = App::new();
-        app.apply(Update::Tx(tx_row()));
-        app.apply(Update::Tx(tx_row()));
+        app.apply(Update::Tx(tx_row(0)));
+        app.apply(Update::Tx(tx_row(1)));
         assert_eq!(app.rows.len(), 2);
         assert_eq!(app.rows[0].seq, 1);
         assert_eq!(app.rows[1].seq, 0);
     }
 
     #[test]
+    fn a_resolved_total_lands_on_its_row_and_a_stale_one_is_dropped() {
+        let mut app = App::new();
+        app.apply(Update::Tx(pending_row(7)));
+        app.apply(Update::ValueResolved {
+            seq: 7,
+            total: Some(410_000),
+        });
+        assert!(matches!(
+            app.rows[0].tx.input_total,
+            InputTotal::Known(410_000)
+        ));
+        // A patch for a seq no longer present is a no-op, not a panic.
+        app.apply(Update::ValueResolved {
+            seq: 999,
+            total: Some(1),
+        });
+    }
+
+    #[test]
     fn selection_stays_on_its_tx_across_a_prepend() {
         let mut app = App::new();
-        app.apply(Update::Tx(tx_row()));
+        app.apply(Update::Tx(tx_row(0)));
         app.select_first();
         assert_eq!(app.selected_index(), Some(0));
-        app.apply(Update::Tx(tx_row()));
+        app.apply(Update::Tx(tx_row(1)));
         // The same tx is now at index 1, and the cursor followed it there.
         assert_eq!(app.selected_index(), Some(1));
     }
@@ -210,7 +252,7 @@ mod tests {
     #[test]
     fn a_block_clears_the_pending_set_and_selection() {
         let mut app = App::new();
-        app.apply(Update::Tx(tx_row()));
+        app.apply(Update::Tx(tx_row(0)));
         app.select_first();
         app.apply(Update::Block {
             tip: 42,
@@ -224,8 +266,8 @@ mod tests {
     #[test]
     fn j_and_k_walk_the_selection() {
         let mut app = App::new();
-        app.apply(Update::Tx(tx_row()));
-        app.apply(Update::Tx(tx_row()));
+        app.apply(Update::Tx(tx_row(0)));
+        app.apply(Update::Tx(tx_row(1)));
         app.on_key(press(KeyCode::Char('j')));
         assert_eq!(app.selected_index(), Some(0));
         app.on_key(press(KeyCode::Char('j')));
@@ -269,7 +311,7 @@ mod tests {
     #[test]
     fn enter_toggles_the_detail_pane() {
         let mut app = App::new();
-        app.apply(Update::Tx(tx_row()));
+        app.apply(Update::Tx(tx_row(0)));
         app.on_key(press(KeyCode::Enter));
         assert!(app.detail, "enter opens the detail");
         app.on_key(press(KeyCode::Enter));
