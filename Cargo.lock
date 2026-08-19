@@ -3069,6 +3069,7 @@ dependencies = [
  "clap",
  "crossterm",
  "futures-util",
+ "hex",
  "lightwallet-core",
  "lightwallet-txview",
  "ratatui",
@@ -3082,6 +3083,8 @@ dependencies = [
 name = "lightwallet-txview"
 version = "0.1.0"
 dependencies = [
+ "hex",
+ "orchard",
  "serde",
  "serde_json",
  "zcash_primitives",

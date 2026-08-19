@@ -1,7 +1,9 @@
 //! The machine-readable consumer: the same `Update` stream the TUI renders,
 //! serialized one JSON object per line to stdout. A `block` event marks each
-//! boundary, so a consumer can reset its pending set and dedup the mempool the
-//! server re-sends on reconnect.
+//! mempool boundary, so a consumer can reset its pending set and dedup the
+//! mempool the server re-sends on reconnect; `mined_block`, `info`, and `reorg`
+//! carry the explorer tail. Search events never occur here (NDJSON issues no
+//! queries), so they are dropped.
 //!
 //! A transparent input total arrives after its transaction, once the funding
 //! outputs are followed, so a `tx` line carries a `seq` and a later
@@ -25,13 +27,13 @@ use crate::app::{Phase, Update};
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Event {
-    /// A block boundary. The pending set that preceded it is now stale.
+    /// A mempool block boundary. The pending set that preceded it is now stale.
     Block { height: u64, time: Option<u32> },
     /// A mempool transaction.
     Tx {
         seq: u64,
         #[serde(flatten)]
-        tx: ParsedTx,
+        tx: Box<ParsedTx>,
     },
     /// A transparent input total, followed after the `tx` line with this `seq`.
     /// Both amounts are null when a funding lookup failed, so the fee is
@@ -41,6 +43,21 @@ enum Event {
         inputs_value_zat: Option<i64>,
         fee_zat: Option<i64>,
     },
+    /// A block entering the explorer tail.
+    MinedBlock {
+        height: u64,
+        time: u32,
+        txs: usize,
+        inputs: usize,
+        outputs: usize,
+    },
+    /// A `GetLightdInfo` sample.
+    Info {
+        block_height: u64,
+        estimated_height: u64,
+    },
+    /// A reorg replaced the chain from `at_height`.
+    Reorg { at_height: u64 },
     /// A connection state change.
     Status {
         state: &'static str,
@@ -73,7 +90,7 @@ pub async fn run(mut rx: UnboundedReceiver<Update>) -> Result<()> {
                 }
                 Event::Tx {
                     seq: row.seq,
-                    tx: row.tx,
+                    tx: Box::new(row.tx),
                 }
             }
             Update::ValueResolved { seq, total } => {
@@ -84,6 +101,21 @@ pub async fn run(mut rx: UnboundedReceiver<Update>) -> Result<()> {
                     fee_zat,
                 }
             }
+            Update::MinedBlock(b) => Event::MinedBlock {
+                height: b.height,
+                time: b.time,
+                txs: b.txs,
+                inputs: b.inputs,
+                outputs: b.outputs,
+            },
+            Update::Info {
+                block_height,
+                estimated_height,
+            } => Event::Info {
+                block_height,
+                estimated_height,
+            },
+            Update::Reorg { at_height } => Event::Reorg { at_height },
             Update::Phase(Phase::Connecting) => Event::Status {
                 state: "connecting",
                 detail: None,
@@ -96,6 +128,11 @@ pub async fn run(mut rx: UnboundedReceiver<Update>) -> Result<()> {
                 state: "reconnecting",
                 detail: Some(err),
             },
+            // NDJSON issues no queries, so search results never reach here.
+            Update::SearchTx(_)
+            | Update::SearchBlock(_)
+            | Update::SearchTaddr { .. }
+            | Update::SearchError(_) => continue,
         };
         let line = serde_json::to_string(&event)?;
         if let Err(e) = writeln!(out, "{line}").and_then(|()| out.flush()) {

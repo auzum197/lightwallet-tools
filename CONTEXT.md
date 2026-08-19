@@ -170,6 +170,17 @@ its own activity is expressed by how many it constructs. The unlinkability
 it delivers is only as strong as the transport underneath: structural on all
 transports, meaningful on privacy transports.
 
+## Chain health
+
+The Live monitor's one-word reading of chain block-production as seen through
+the Indexer, assuming a live connection: `healthy` (tip advancing, interblock
+spacing near target), `syncing` (node behind its own estimate, catching up), or
+`stalled` (no block for well over target, node believes it is at tip). A
+statement about the chain, not the connection: an unreachable Indexer is a
+separate indicator, not a fourth state. `quiet` was the early word for the
+`healthy` case, dropped because quiet describes the chain and healthy describes
+the reading.
+
 ## Promotion gate
 
 The live measurement that decides whether a transport graduates from

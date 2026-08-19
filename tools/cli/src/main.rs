@@ -412,12 +412,17 @@ async fn main() -> Result<()> {
                 );
             }
             // Mempool txs are height 0, so their branch is the tip's; the parser
-            // needs it to select v5/v6 rules. Debug keeps the faithful proto.
-            let branch = ix
+            // derives it from the tip height under the chain's schedule. A
+            // canonical main/test chain uses zcash_protocol's built-in schedule;
+            // anything else falls back to the featurenet. Debug keeps the proto.
+            let chain = ix
                 .discover_params()
                 .await
-                .map(|p| p.consensus_branch_id)
-                .unwrap_or(0);
+                .ok()
+                .and_then(|p| lightwallet_txview::ChainParams::canonical(&p.chain_name))
+                .unwrap_or_else(lightwallet_txview::ChainParams::featurenet);
+            let tip = ix.get_latest_height().await.unwrap_or(0);
+            let height = lightwallet_txview::BlockHeight::from_u32(tip as u32);
 
             // The server re-dumps the current mempool on every (re)connect, so a
             // followed feed would repeat every unmined tx after each block. Show
@@ -432,7 +437,7 @@ async fn main() -> Result<()> {
                         renderer.item(&raw, "RawTransaction")?;
                         continue;
                     }
-                    let view = lightwallet_txview::parse(&raw.data, branch);
+                    let view = lightwallet_txview::parse(&raw.data, height, &chain);
                     if let Some(txid) = &view.txid
                         && follow
                         && !seen.insert(txid.clone())
