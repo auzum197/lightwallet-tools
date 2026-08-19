@@ -12,6 +12,7 @@ use ratatui::widgets::{
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::app::{App, BlockRow, DrillOrigin, Focus, Phase, Row, TaddrHit, View};
+use crate::dither;
 use crate::health::Health;
 use crate::theme::{self, color};
 use lightwallet_txview::{
@@ -292,7 +293,7 @@ fn render_tx_pane(f: &mut Frame, area: Rect, app: &App) {
     let outer = left_pane("transaction");
     let inner = outer.inner(area);
     f.render_widget(outer, area);
-    placeholder(f, inner, "select a tx · enter");
+    empty_surface(f, inner, "select a tx · enter", app);
 }
 
 fn render_block_detail(f: &mut Frame, area: Rect, app: &App) {
@@ -388,6 +389,17 @@ fn placeholder(f: &mut Frame, area: Rect, text: &str) {
     );
 }
 
+/// An empty pane's placeholder over the dither gradient when it's on, or the
+/// plain hint when it isn't. The gradient is empty-space material: the one hint
+/// line rides on top, the rest of the rect is the field. This is the only
+/// animated surface a given screen shows.
+fn empty_surface(f: &mut Frame, area: Rect, text: &str, app: &App) {
+    if app.dither_enabled {
+        dither::render(f.buffer_mut(), area, app.dither_time());
+    }
+    placeholder(f, area, text);
+}
+
 fn render_mempool(f: &mut Frame, area: Rect, app: &App) {
     if app.rows.is_empty() {
         let msg = match &app.phase {
@@ -395,7 +407,7 @@ fn render_mempool(f: &mut Frame, area: Rect, app: &App) {
             Phase::Connecting => "connecting…".to_string(),
             Phase::Reconnecting(_) => "reconnecting…".to_string(),
         };
-        placeholder(f, area, &msg);
+        empty_surface(f, area, &msg, app);
         return;
     }
     let items: Vec<ListItem> = app.rows.iter().map(mempool_item).collect();
@@ -450,7 +462,7 @@ fn render_blocks(f: &mut Frame, area: Rect, app: &App) {
             Phase::Connecting => "connecting…".to_string(),
             Phase::Reconnecting(_) => "reconnecting…".to_string(),
         };
-        placeholder(f, list, &msg);
+        empty_surface(f, list, &msg, app);
         return;
     }
     let now = now_unix();
@@ -498,7 +510,12 @@ fn render_results(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(header), head);
 
     if app.taddr_hits.is_empty() {
-        placeholder(f, list, &format!("no transactions for {}", app.taddr_label));
+        empty_surface(
+            f,
+            list,
+            &format!("no transactions for {}", app.taddr_label),
+            app,
+        );
         return;
     }
     let items: Vec<ListItem> = app.taddr_hits.iter().map(result_item).collect();
@@ -1074,7 +1091,7 @@ mod tests {
 
     fn app() -> App {
         let (tx, _rx) = mpsc::unbounded_channel();
-        App::new(tx, App::DEFAULT_TARGET)
+        App::new(tx, App::DEFAULT_TARGET, false)
     }
 
     fn render(app: &App) -> String {

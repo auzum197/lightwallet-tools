@@ -178,6 +178,10 @@ pub enum Update {
 /// The t-address search window: blocks back from tip, snapshotted at submit.
 pub const SEARCH_WINDOW: u64 = 10_000;
 
+/// Seconds without a keypress before the gradient pauses, treating the user as
+/// away rather than watching.
+const DITHER_IDLE_SECS: u64 = 10;
+
 const MAX_ROWS: usize = 5_000;
 const MAX_BLOCKS: usize = 256;
 const MAX_BLOCK_TIMES: usize = 32;
@@ -247,10 +251,22 @@ pub struct App {
     next_block_seq: u64,
     start: Instant,
     req: UnboundedSender<Request>,
+
+    /// Whether the dither gradient is on: the flag was passed and the terminal
+    /// can render it.
+    pub dither_enabled: bool,
+    /// Accumulated field time, advancing only while the gradient is active, so
+    /// pausing freezes the animation on its last frame.
+    dither_secs: f32,
+    /// Wall clock of the last tick, to measure the field's per-frame step.
+    last_tick: Instant,
+    /// Wall clock of the last keypress, for the idle pause.
+    last_input: Instant,
 }
 
 impl App {
-    pub fn new(req: UnboundedSender<Request>, target_spacing: u64) -> Self {
+    pub fn new(req: UnboundedSender<Request>, target_spacing: u64, dither_enabled: bool) -> Self {
+        let now = Instant::now();
         Self {
             view: View::Blocks,
             focus: Focus::List,
@@ -288,14 +304,46 @@ impl App {
             selected_block_seq: None,
             selected_hit: 0,
             next_block_seq: 0,
-            start: Instant::now(),
+            start: now,
             req,
+            dither_enabled,
+            dither_secs: 0.0,
+            last_tick: now,
+            last_input: now,
         }
     }
 
     /// Seconds since start, the shimmer's animation clock.
     pub fn elapsed(&self) -> f32 {
         self.start.elapsed().as_secs_f32()
+    }
+
+    /// Advance the field clock by the elapsed frame, but only while the gradient
+    /// is active. Paused, focused on input, drilled into a tx, or idle: the clock
+    /// holds and the surface freezes on its last frame.
+    pub fn tick_dither(&mut self) {
+        let now = Instant::now();
+        let dt = now.duration_since(self.last_tick).as_secs_f32();
+        self.last_tick = now;
+        if self.dither_active(now) {
+            self.dither_secs += dt;
+        }
+    }
+
+    fn dither_active(&self, now: Instant) -> bool {
+        self.dither_enabled
+            && !self.paused
+            && !matches!(self.focus, Focus::Search | Focus::Help)
+            && self.drill.is_none()
+            && now.duration_since(self.last_input).as_secs() < DITHER_IDLE_SECS
+    }
+
+    /// The field time for the current frame, `t` advancing 0.5 units a second of
+    /// active animation, quantized to ~11fps so repaints land at most every 90ms
+    /// and the frozen frames between diff to nothing.
+    pub fn dither_time(&self) -> f32 {
+        const STEP: f32 = 0.09;
+        (self.dither_secs / STEP).floor() * STEP * 0.5
     }
 
     /// Current chain health, evaluated fresh each call.
@@ -536,6 +584,7 @@ impl App {
 
     /// Handle a keypress. Returns true to quit.
     pub fn on_key(&mut self, key: KeyEvent) -> bool {
+        self.last_input = Instant::now();
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return true;
         }
@@ -925,7 +974,7 @@ mod tests {
 
     fn app() -> (App, mpsc::UnboundedReceiver<Request>) {
         let (tx, rx) = mpsc::unbounded_channel();
-        (App::new(tx, App::DEFAULT_TARGET), rx)
+        (App::new(tx, App::DEFAULT_TARGET, false), rx)
     }
 
     /// A shielded row with no transparent inputs, addressed by `seq`.
@@ -1357,6 +1406,30 @@ mod tests {
         assert_eq!(app.focus, Focus::Help);
         app.on_key(press(KeyCode::Char('j')));
         assert_eq!(app.focus, Focus::List);
+    }
+
+    #[test]
+    fn a_disabled_gradient_never_advances_its_clock() {
+        let (mut app, _rx) = app();
+        assert!(!app.dither_enabled);
+        for _ in 0..5 {
+            app.tick_dither();
+        }
+        assert_eq!(app.dither_time(), 0.0);
+    }
+
+    #[test]
+    fn the_field_clock_quantizes_to_the_repaint_step() {
+        let (mut app, _rx) = app();
+        app.dither_enabled = true;
+        // Two sub-step advances land in the same 90ms bucket: the frame is frozen.
+        app.dither_secs = 0.04;
+        let a = app.dither_time();
+        app.dither_secs = 0.08;
+        assert_eq!(app.dither_time(), a);
+        // Crossing the step boundary advances t by one 90ms tick scaled by 0.5.
+        app.dither_secs = 0.10;
+        assert!(app.dither_time() > a);
     }
 
     #[test]
