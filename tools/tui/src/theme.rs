@@ -11,6 +11,10 @@ pub const ACCENT_DIM: Rgb = (0x0f, 0x4c, 0x47);
 pub const ACCENT_HI: Rgb = (0x9c, 0xf6, 0xe9);
 
 pub const BG: Rgb = (0x0d, 0x11, 0x17);
+// Structural slate: pane edges and the selected-row fill. Dark enough to sit
+// under content without competing with it.
+pub const BORDER: Rgb = (0x1b, 0x23, 0x2d);
+pub const SEL_BG: Rgb = (0x1b, 0x25, 0x30);
 pub const FAINT: Rgb = (0x55, 0x60, 0x6b);
 pub const TEXT: Rgb = (0xc8, 0xd2, 0xdc);
 pub const WARN: Rgb = (0xf2, 0xb0, 0x5e);
@@ -33,6 +37,17 @@ pub fn lerp(a: Rgb, b: Rgb, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
     let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
     Color::Rgb(mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))
+}
+
+/// Braille spinner frames. A syncing indicator animates by cycling these on the
+/// frame clock, so the motion carries the "in progress" read without pulsing the
+/// color.
+const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/// The spinner frame for `secs` of elapsed time, advancing about 12 frames a
+/// second.
+pub fn spinner(secs: f32) -> char {
+    SPINNER[(secs * 12.0) as usize % SPINNER.len()]
 }
 
 /// A smooth 0->1->0 pulse. `secs` is the animation clock, `period` the full cycle.

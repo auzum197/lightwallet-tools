@@ -128,11 +128,14 @@ pub async fn run(mut rx: UnboundedReceiver<Update>) -> Result<()> {
                 state: "reconnecting",
                 detail: Some(err),
             },
-            // NDJSON issues no queries, so search results never reach here.
+            // NDJSON issues no queries, so search results and the drill's
+            // input-resolution progress never reach here.
             Update::SearchTx(_)
             | Update::SearchBlock(_)
             | Update::SearchTaddr { .. }
-            | Update::SearchError(_) => continue,
+            | Update::SearchError(_)
+            | Update::DrillProbe { .. }
+            | Update::DrillResolved { .. } => continue,
         };
         let line = serde_json::to_string(&event)?;
         if let Err(e) = writeln!(out, "{line}").and_then(|()| out.flush()) {

@@ -24,6 +24,8 @@ use std::fmt;
 use serde::Serialize;
 use serde::ser::{SerializeMap, Serializer};
 use zcash_primitives::transaction::Transaction;
+#[cfg(zcash_unstable = "crosslink")]
+use zcash_primitives::transaction::components::staking::StakingAction;
 use zcash_protocol::consensus::{BranchId, Parameters};
 
 pub use params::{ChainParams, FeatureNet};
@@ -182,6 +184,111 @@ impl PoolOutput {
     }
 }
 
+/// Which of the seven staking actions a [`Staking`] projection describes. The
+/// discriminant a reader keys on; the variant fields present on [`Staking`]
+/// follow from it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StakingKind {
+    CreateNewDelegationBond,
+    BeginDelegationUnbonding,
+    WithdrawDelegationBond,
+    RetargetDelegationBond,
+    RegisterFinalizer,
+    ConvertFinalizerRewardToDelegationBond,
+    UpdateFinalizerKey,
+}
+
+impl StakingKind {
+    /// The snake_case discriminant serialized under `kind`.
+    pub fn tag(&self) -> &'static str {
+        match self {
+            StakingKind::CreateNewDelegationBond => "create_new_delegation_bond",
+            StakingKind::BeginDelegationUnbonding => "begin_delegation_unbonding",
+            StakingKind::WithdrawDelegationBond => "withdraw_delegation_bond",
+            StakingKind::RetargetDelegationBond => "retarget_delegation_bond",
+            StakingKind::RegisterFinalizer => "register_finalizer",
+            StakingKind::ConvertFinalizerRewardToDelegationBond => {
+                "convert_finalizer_reward_to_delegation_bond"
+            }
+            StakingKind::UpdateFinalizerKey => "update_finalizer_key",
+        }
+    }
+
+    /// The human title for the drill-down section header (`Create new delegation
+    /// bond`). The one authoritative name list, so a pane can't drift from JSON.
+    pub fn title(&self) -> &'static str {
+        match self {
+            StakingKind::CreateNewDelegationBond => "Create new delegation bond",
+            StakingKind::BeginDelegationUnbonding => "Begin delegation unbonding",
+            StakingKind::WithdrawDelegationBond => "Withdraw delegation bond",
+            StakingKind::RetargetDelegationBond => "Retarget delegation bond",
+            StakingKind::RegisterFinalizer => "Register finalizer",
+            StakingKind::ConvertFinalizerRewardToDelegationBond => {
+                "Convert finalizer reward to delegation bond"
+            }
+            StakingKind::UpdateFinalizerKey => "Update finalizer key",
+        }
+    }
+}
+
+/// The staking action a V7 (VCrosslink) transaction carries, projected to its
+/// public-on-wire fields. `bond_id` and `target_finalizer` are identifiers, so
+/// they decode to hex; the challenge/signature blobs are committed to by the
+/// txid but not consensus-verified and say nothing to a viewer, so they show as
+/// presence-plus-length. Variant fields are `Some` only when the action carries
+/// them: `amount_zat` on create/withdraw/convert, `target_finalizer` on
+/// create/retarget/convert/update, the second challenge/signature on
+/// convert/update. `this_finalizer` serializes under `target_finalizer` too, so
+/// a reader asks "which finalizer" without the fork's naming split.
+#[derive(Clone)]
+pub struct Staking {
+    pub kind: StakingKind,
+    pub bond_id: String,
+    pub challenge: Blob,
+    pub signature: Blob,
+    pub target_finalizer: Option<String>,
+    pub amount_zat: Option<i64>,
+    pub second_challenge: Option<Blob>,
+    pub finalizer_signature: Option<Blob>,
+}
+
+impl Staking {
+    /// The signed value this action moves through the transaction's value
+    /// balance: a create bonds value out, a withdraw brings it back, the other
+    /// five move nothing. Matches the fork's `value_balance_contribution`, so
+    /// folding it into the fee math keeps a create/withdraw fee correct.
+    fn value_balance_contribution(&self) -> i64 {
+        match self.kind {
+            StakingKind::CreateNewDelegationBond => -self.amount_zat.unwrap_or(0),
+            StakingKind::WithdrawDelegationBond => self.amount_zat.unwrap_or(0),
+            _ => 0,
+        }
+    }
+}
+
+impl Serialize for Staking {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("kind", self.kind.tag())?;
+        map.serialize_entry("bond_id", &self.bond_id)?;
+        map.serialize_entry("challenge", &self.challenge)?;
+        map.serialize_entry("signature", &self.signature)?;
+        if let Some(finalizer) = &self.target_finalizer {
+            map.serialize_entry("target_finalizer", finalizer)?;
+        }
+        if let Some(amount) = self.amount_zat {
+            map.serialize_entry("amount_zat", &amount)?;
+        }
+        if let Some(blob) = &self.second_challenge {
+            map.serialize_entry("second_challenge", blob)?;
+        }
+        if let Some(blob) = &self.finalizer_signature {
+            map.serialize_entry("finalizer_signature", blob)?;
+        }
+        map.end()
+    }
+}
+
 /// The value a transaction moved, as far as the wire reveals it.
 #[derive(Clone)]
 pub enum Value {
@@ -267,6 +374,11 @@ pub struct ParsedTx {
     pub expiry_height: Option<u32>,
     pub inputs: Vec<PoolInput>,
     pub outputs: Vec<PoolOutput>,
+    /// The staking action, present only on a V7 (VCrosslink) tx that carries
+    /// one. Absent on every pre-V7 tx and on a V7 tx with no action. Boxed: it
+    /// is far larger than any other field yet almost never present, so it stays
+    /// off the common tx's footprint.
+    pub staking: Option<Box<Staking>>,
     pub value: Value,
     /// Transparent output values in order (zatoshis). What this transaction
     /// offers as funding to a later one: a spender's [`OutPoint`] with index `i`
@@ -337,8 +449,12 @@ impl ParsedTx {
             Value::Shielded => "shielded".to_string(),
             Value::Unknown => "—".to_string(),
         };
+        let staking = match &self.staking {
+            Some(s) => format!("  stake:{}", s.kind.tag()),
+            None => String::new(),
+        };
         format!(
-            "{txid}  {version}  {pools}  {value}  fee {}",
+            "{txid}  {version}  {pools}  {value}  fee {}{staking}",
             fee_text(&self.fee())
         )
     }
@@ -418,6 +534,9 @@ impl Serialize for ParsedTx {
         map.serialize_entry("expiry_height", &self.expiry_height)?;
         map.serialize_entry("inputs", &self.inputs)?;
         map.serialize_entry("outputs", &self.outputs)?;
+        if let Some(staking) = &self.staking {
+            map.serialize_entry("staking", staking)?;
+        }
         // Value is either a clear amount or the censored marker, never both, so
         // the key itself carries the distinction.
         match self.value {
@@ -461,6 +580,7 @@ pub fn parse<P: Parameters>(data: &[u8], height: BlockHeight, params: &P) -> Par
         expiry_height: None,
         inputs: Vec::new(),
         outputs: Vec::new(),
+        staking: None,
         value: Value::Unknown,
         vout_values: Vec::new(),
         prevouts: Vec::new(),
@@ -598,6 +718,17 @@ pub fn parse<P: Parameters>(data: &[u8], height: BlockHeight, params: &P) -> Par
         view.outputs.push(PoolOutput::Ironwood { outputs });
     }
 
+    // A V7 tx's staking action is public on the wire. Its value contribution
+    // (a create bonds out, a withdraw brings back) joins the shielded value
+    // balances so a staking tx's fee stays correct; the fork accounts for it
+    // the same way in `fee_paid`.
+    #[cfg(zcash_unstable = "crosslink")]
+    if let Some(action) = tx.staking_action() {
+        let staking = project_staking(action);
+        value_balance += staking.value_balance_contribution();
+        view.staking = Some(Box::new(staking));
+    }
+
     // The moved value is the clear output total only when nothing shielded is
     // on the output side; any shielded output hides it.
     view.value = if shielded_output {
@@ -611,6 +742,104 @@ pub fn parse<P: Parameters>(data: &[u8], height: BlockHeight, params: &P) -> Par
     // has no transparent inputs, so this term already is the fee.
     view.fee_base = Some(value_balance - transparent_out);
     view
+}
+
+/// Project a fork [`StakingAction`] onto the view's public-on-wire [`Staking`]
+/// shape. Identifiers decode to hex; the challenge/signature blobs keep only
+/// their length. Both finalizer namings (`target_finalizer`, `this_finalizer`)
+/// land in one `target_finalizer` field.
+#[cfg(zcash_unstable = "crosslink")]
+fn project_staking(action: &StakingAction) -> Staking {
+    use zcash_primitives::transaction::components::staking::StakingAction::*;
+
+    let base = |kind, bond_id: &[u8; 32], challenge: &[u8; 32], signature: &[u8; 64]| Staking {
+        kind,
+        bond_id: hex::encode(bond_id),
+        challenge: Blob {
+            bytes: challenge.len(),
+        },
+        signature: Blob {
+            bytes: signature.len(),
+        },
+        target_finalizer: None,
+        amount_zat: None,
+        second_challenge: None,
+        finalizer_signature: None,
+    };
+
+    match action {
+        CreateNewDelegationBond(a) => Staking {
+            target_finalizer: Some(hex::encode(a.target_finalizer().as_bytes())),
+            amount_zat: Some(a.amount().into_u64() as i64),
+            ..base(
+                StakingKind::CreateNewDelegationBond,
+                a.unique_pubkey().as_bytes(),
+                a.challenge().as_bytes(),
+                a.signature().as_bytes(),
+            )
+        },
+        BeginDelegationUnbonding(a) => base(
+            StakingKind::BeginDelegationUnbonding,
+            a.unique_pubkey().as_bytes(),
+            a.challenge().as_bytes(),
+            a.signature().as_bytes(),
+        ),
+        WithdrawDelegationBond(a) => Staking {
+            amount_zat: Some(a.amount().into_u64() as i64),
+            ..base(
+                StakingKind::WithdrawDelegationBond,
+                a.unique_pubkey().as_bytes(),
+                a.challenge().as_bytes(),
+                a.signature().as_bytes(),
+            )
+        },
+        RetargetDelegationBond(a) => Staking {
+            target_finalizer: Some(hex::encode(a.target_finalizer().as_bytes())),
+            ..base(
+                StakingKind::RetargetDelegationBond,
+                a.unique_pubkey().as_bytes(),
+                a.challenge().as_bytes(),
+                a.signature().as_bytes(),
+            )
+        },
+        RegisterFinalizer(a) => base(
+            StakingKind::RegisterFinalizer,
+            a.unique_pubkey().as_bytes(),
+            a.challenge().as_bytes(),
+            a.signature().as_bytes(),
+        ),
+        ConvertFinalizerRewardToDelegationBond(a) => Staking {
+            target_finalizer: Some(hex::encode(a.this_finalizer().as_bytes())),
+            amount_zat: Some(a.amount().into_u64() as i64),
+            second_challenge: Some(Blob {
+                bytes: a.second_challenge().as_bytes().len(),
+            }),
+            finalizer_signature: Some(Blob {
+                bytes: a.finalizer_signature().as_bytes().len(),
+            }),
+            ..base(
+                StakingKind::ConvertFinalizerRewardToDelegationBond,
+                a.unique_pubkey().as_bytes(),
+                a.challenge().as_bytes(),
+                a.signature().as_bytes(),
+            )
+        },
+        UpdateFinalizerKey(a) => Staking {
+            target_finalizer: Some(hex::encode(a.this_finalizer().as_bytes())),
+            second_challenge: Some(Blob {
+                bytes: a.second_challenge().as_bytes().len(),
+            }),
+            finalizer_signature: Some(Blob {
+                bytes: a.finalizer_signature().as_bytes().len(),
+            }),
+            ..base(
+                StakingKind::UpdateFinalizerKey,
+                a.unique_pubkey().as_bytes(),
+                a.challenge().as_bytes(),
+                a.signature().as_bytes(),
+            )
+        },
+    }
 }
 
 /// Read the fields the view wants off an Orchard-shaped bundle (Orchard or
@@ -670,6 +899,7 @@ mod tests {
             expiry_height: Some(0),
             inputs: vec![PoolInput::Transparent { vin: Vec::new() }],
             outputs: vec![PoolOutput::Transparent { vout: Vec::new() }],
+            staking: None,
             value: Value::Clear(400_000),
             vout_values: vec![400_000],
             prevouts: (0..prevouts)
@@ -723,6 +953,7 @@ mod tests {
                     address: Some("t1abc".into()),
                 }],
             }],
+            staking: None,
             value: Value::Clear(500_000),
             vout_values: vec![500_000],
             prevouts: Vec::new(),
@@ -820,6 +1051,111 @@ mod tests {
         assert!(line.contains("unparseable"));
     }
 
+    fn convert_staking() -> Staking {
+        Staking {
+            kind: StakingKind::ConvertFinalizerRewardToDelegationBond,
+            bond_id: "ab".repeat(32),
+            challenge: Blob { bytes: 32 },
+            signature: Blob { bytes: 64 },
+            target_finalizer: Some("cd".repeat(32)),
+            amount_zat: Some(150_000_000),
+            second_challenge: Some(Blob { bytes: 32 }),
+            finalizer_signature: Some(Blob { bytes: 64 }),
+        }
+    }
+
+    #[test]
+    fn staking_serializes_only_the_fields_its_kind_carries() {
+        let convert = serde_json::to_string(&convert_staking()).unwrap();
+        assert!(convert.contains("\"kind\":\"convert_finalizer_reward_to_delegation_bond\""));
+        assert!(convert.contains("\"target_finalizer\":\"cdcd"));
+        assert!(convert.contains("\"amount_zat\":150000000"));
+        assert!(convert.contains("\"second_challenge\":{\"bytes\":32}"));
+        assert!(convert.contains("\"finalizer_signature\":{\"bytes\":64}"));
+
+        // A bare kind carries none of the variant fields, so they stay off the wire.
+        let begin = serde_json::to_string(&Staking {
+            kind: StakingKind::BeginDelegationUnbonding,
+            bond_id: "00".repeat(32),
+            challenge: Blob { bytes: 32 },
+            signature: Blob { bytes: 64 },
+            target_finalizer: None,
+            amount_zat: None,
+            second_challenge: None,
+            finalizer_signature: None,
+        })
+        .unwrap();
+        assert!(begin.contains("\"kind\":\"begin_delegation_unbonding\""));
+        assert!(!begin.contains("target_finalizer"));
+        assert!(!begin.contains("amount_zat"));
+        assert!(!begin.contains("second_challenge"));
+    }
+
+    #[test]
+    fn a_staking_tx_serializes_under_the_staking_key() {
+        let mut view = transparent_pending(1);
+        view.staking = Some(Box::new(convert_staking()));
+        let json = serde_json::to_string(&view).unwrap();
+        assert!(json.contains("\"staking\":{"));
+        assert!(
+            view.summary()
+                .contains("stake:convert_finalizer_reward_to_delegation_bond")
+        );
+    }
+
+    #[test]
+    fn only_create_and_withdraw_move_value() {
+        let create = Staking {
+            amount_zat: Some(150_000_000),
+            ..convert_staking()
+        };
+        let create = Staking {
+            kind: StakingKind::CreateNewDelegationBond,
+            ..create
+        };
+        assert_eq!(create.value_balance_contribution(), -150_000_000);
+
+        let withdraw = Staking {
+            kind: StakingKind::WithdrawDelegationBond,
+            ..convert_staking()
+        };
+        assert_eq!(withdraw.value_balance_contribution(), 150_000_000);
+
+        // The other five, convert among them, move nothing despite an amount.
+        assert_eq!(convert_staking().value_balance_contribution(), 0);
+    }
+
+    #[cfg(zcash_unstable = "crosslink")]
+    #[test]
+    fn project_staking_reads_the_forks_action() {
+        use zcash_primitives::transaction::components::staking::{
+            BeginDelegationUnbonding, BondId, StakingAction, StakingAuthChallenge, StakingAuthSig,
+            WithdrawDelegationBond,
+        };
+        use zcash_protocol::value::Zatoshis;
+
+        let bond = BondId::from_bytes([0x11; 32]);
+        let challenge = StakingAuthChallenge::from_bytes([0x22; 32]);
+        let sig = StakingAuthSig::from_bytes([0x33; 64]);
+
+        let withdraw = project_staking(&StakingAction::WithdrawDelegationBond(
+            WithdrawDelegationBond::new(bond, challenge, sig, Zatoshis::from_u64(700).unwrap()),
+        ));
+        assert_eq!(withdraw.kind, StakingKind::WithdrawDelegationBond);
+        assert_eq!(withdraw.bond_id, "11".repeat(32));
+        assert_eq!(withdraw.challenge.bytes, 32);
+        assert_eq!(withdraw.signature.bytes, 64);
+        assert_eq!(withdraw.amount_zat, Some(700));
+        assert!(withdraw.target_finalizer.is_none());
+        assert_eq!(withdraw.value_balance_contribution(), 700);
+
+        let begin = project_staking(&StakingAction::BeginDelegationUnbonding(
+            BeginDelegationUnbonding::new(bond, challenge, sig),
+        ));
+        assert!(begin.amount_zat.is_none());
+        assert_eq!(begin.value_balance_contribution(), 0);
+    }
+
     #[test]
     fn a_shielded_value_serializes_as_the_marker() {
         let view = ParsedTx {
@@ -841,6 +1177,7 @@ mod tests {
             outputs: vec![PoolOutput::Orchard {
                 outputs: Vec::new(),
             }],
+            staking: None,
             value: Value::Shielded,
             vout_values: Vec::new(),
             prevouts: Vec::new(),

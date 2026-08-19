@@ -147,6 +147,22 @@ pub enum Update {
     },
     /// A found transaction, to open in the drill-down.
     SearchTx(TxDetail),
+    /// Progress while the open drill's transparent inputs resolve: the funding
+    /// tx being fetched (display order), or `None` once that step ends. Guarded
+    /// by `txid` so a late probe for a closed or replaced drill is dropped.
+    DrillProbe {
+        txid: String,
+        funder: Option<String>,
+    },
+    /// The resolved transparent input total for the open drill, backing out its
+    /// fee. `Some` when every funder read, `None` when one could not (the fee
+    /// shows unresolvable, never wrong). `values` is the per-input value in vin
+    /// order, each `None` where that funder could not be read. Guarded by `txid`.
+    DrillResolved {
+        txid: String,
+        total: Option<i64>,
+        values: Vec<Option<i64>>,
+    },
     /// A found block, to insert into the tail (if within the window) and select.
     SearchBlock(BlockRow),
     /// A t-address result set.
@@ -196,8 +212,19 @@ pub struct App {
     pub raw_mode: bool,
     pub drill_scroll: u16,
     pub drill_origin: DrillOrigin,
+    /// While the open drill's transparent inputs resolve, the funding txid
+    /// currently being fetched (display order). Cleared when resolution ends.
+    pub drill_probe: Option<String>,
+    /// Per-input resolved value (zats) in vin order, once the drill's funders are
+    /// read. `None` at an index whose funder could not be read. Empty until then.
+    pub drill_input_values: Vec<Option<i64>>,
     /// Where a pending `Request::Transaction` will land when it returns.
     pending_origin: DrillOrigin,
+    /// A tx fetch the user still wants. A `Request::Transaction` is async, so a
+    /// response can arrive after the user has closed the drill or walked past
+    /// the tx that asked for it. Gating `SearchTx` on this drops stale
+    /// responses instead of reopening the drill under them.
+    pub(crate) awaiting_tx: bool,
 
     /// The block opened in the block-detail pane, and the selected tx within it.
     pub block_detail: Option<BlockRow>,
@@ -246,7 +273,10 @@ impl App {
             raw_mode: false,
             drill_scroll: 0,
             drill_origin: DrillOrigin::Standalone,
+            drill_probe: None,
+            drill_input_values: Vec::new(),
             pending_origin: DrillOrigin::Standalone,
+            awaiting_tx: false,
             block_detail: None,
             block_tx_sel: 0,
             taddr_hits: Vec::new(),
@@ -325,7 +355,30 @@ impl App {
                 }
                 self.footer_msg = Some(format!("reorg: height {at_height} replaced"));
             }
-            Update::SearchTx(detail) => self.open_drill(detail, self.pending_origin),
+            Update::SearchTx(detail) => {
+                if self.awaiting_tx {
+                    self.awaiting_tx = false;
+                    self.open_drill(detail, self.pending_origin);
+                }
+            }
+            Update::DrillProbe { txid, funder } => {
+                if self.drill_txid() == Some(txid.as_str()) {
+                    self.drill_probe = funder;
+                }
+            }
+            Update::DrillResolved {
+                txid,
+                total,
+                values,
+            } => {
+                if let Some(d) = &mut self.drill
+                    && d.parsed.txid.as_deref() == Some(txid.as_str())
+                {
+                    d.parsed.resolve(total);
+                    self.drill_input_values = values;
+                    self.drill_probe = None;
+                }
+            }
             Update::SearchBlock(block) => {
                 let height = block.height;
                 self.insert_block(block);
@@ -387,11 +440,18 @@ impl App {
         }
     }
 
+    /// The txid of the tx open in the drill, if any and if it parsed.
+    fn drill_txid(&self) -> Option<&str> {
+        self.drill.as_ref().and_then(|d| d.parsed.txid.as_deref())
+    }
+
     fn open_drill(&mut self, detail: TxDetail, origin: DrillOrigin) {
         self.drill = Some(detail);
         self.drill_origin = origin;
         self.raw_mode = false;
         self.drill_scroll = 0;
+        self.drill_probe = None;
+        self.drill_input_values = Vec::new();
         // A block-opened tx keeps its block-detail column and its tx list to
         // return to; every other origin drills over the plain list.
         if origin != DrillOrigin::Block {
@@ -532,6 +592,7 @@ impl App {
             KeyCode::Char('y') => self.copy_block_txid(),
             KeyCode::Esc | KeyCode::Left => {
                 self.block_detail = None;
+                self.awaiting_tx = false;
                 self.focus = Focus::List;
             }
             _ => {}
@@ -545,6 +606,7 @@ impl App {
             && let Some(tx) = block.tx_rows.get(self.block_tx_sel)
         {
             self.pending_origin = DrillOrigin::Block;
+            self.awaiting_tx = true;
             let _ = self.req.send(Request::Transaction(tx.txid.clone()));
             self.footer_msg = Some("searching tx…".to_string());
         }
@@ -598,6 +660,9 @@ impl App {
             KeyCode::Char('Y') => self.copy_raw(),
             KeyCode::Enter | KeyCode::Esc | KeyCode::Left => {
                 self.drill = None;
+                self.drill_probe = None;
+                self.drill_input_values = Vec::new();
+                self.awaiting_tx = false;
                 // A block-opened tx pops back to its block's tx list; every
                 // other origin returns to the plain list.
                 self.focus = match self.drill_origin {
@@ -695,6 +760,7 @@ impl App {
             }
         } else if let Some(hex) = as_txid_hex(q) {
             self.pending_origin = DrillOrigin::Standalone;
+            self.awaiting_tx = true;
             let _ = self.req.send(Request::Transaction(hex));
             self.footer_msg = Some("searching tx…".to_string());
         } else if is_transparent_addr(q) {
@@ -765,14 +831,18 @@ impl App {
         }
     }
 
-    /// Step to the block's next/prev tx and open it in place.
+    /// Step to the block's next/prev tx and open it in place. A step that lands
+    /// on the current row (a single-tx block, or already at a boundary) fetches
+    /// nothing: re-requesting the tx already shown is wasted work.
     fn walk_block_tx(&mut self, dir: i32) {
         let count = self
             .block_detail
             .as_ref()
             .map(|b| b.tx_rows.len())
             .unwrap_or(0);
-        if let Some(next) = self.step(Some(self.block_tx_sel), count, dir as isize) {
+        if let Some(next) = self.step(Some(self.block_tx_sel), count, dir as isize)
+            && next != self.block_tx_sel
+        {
             self.block_tx_sel = next;
             self.open_block_tx();
         }
@@ -894,6 +964,7 @@ mod tests {
             expiry_height: Some(0),
             inputs: Vec::new(),
             outputs: Vec::new(),
+            staking: None,
             value: Value::Shielded,
             vout_values: Vec::new(),
             prevouts: Vec::new(),
@@ -935,6 +1006,18 @@ mod tests {
         }
     }
 
+    /// A block carrying two transactions, so a walk has somewhere to step to.
+    fn block_two_txs(height: u64, time: u32) -> BlockRow {
+        let mut b = block(height, time);
+        b.txs = 2;
+        b.tx_rows.push(BlockTx {
+            txid: "b".repeat(64),
+            inputs: 2,
+            outputs: 3,
+        });
+        b
+    }
+
     /// Select the first (index 0) block row in the Blocks view.
     fn select_first_block(app: &mut App) {
         app.on_key(press(KeyCode::Char('j')));
@@ -967,6 +1050,59 @@ mod tests {
             seq: 999,
             total: Some(1),
         });
+    }
+
+    #[test]
+    fn drill_input_resolution_lands_by_txid_and_tracks_the_probe() {
+        let (mut app, _rx) = app();
+        let mut parsed = parsed();
+        parsed.txid = Some("a".repeat(64));
+        parsed.input_total = InputTotal::Pending;
+        parsed.prevouts = vec![OutPoint {
+            hash: [1u8; 32],
+            index: 0,
+        }];
+        app.drill = Some(TxDetail {
+            parsed,
+            raw: Vec::new(),
+        });
+
+        // A probe for the open tx names the funder being read.
+        app.apply(Update::DrillProbe {
+            txid: "a".repeat(64),
+            funder: Some("f".repeat(64)),
+        });
+        assert_eq!(app.drill_probe.as_deref(), Some("f".repeat(64).as_str()));
+        // A probe for a different tx is dropped, leaving the current one.
+        app.apply(Update::DrillProbe {
+            txid: "b".repeat(64),
+            funder: Some("c".repeat(64)),
+        });
+        assert_eq!(app.drill_probe.as_deref(), Some("f".repeat(64).as_str()));
+
+        // Resolution for the open tx lands and clears the probe.
+        app.apply(Update::DrillResolved {
+            txid: "a".repeat(64),
+            total: Some(500_000),
+            values: vec![Some(500_000)],
+        });
+        assert!(matches!(
+            app.drill.as_ref().unwrap().parsed.input_total,
+            InputTotal::Known(500_000)
+        ));
+        assert_eq!(app.drill_input_values, vec![Some(500_000)]);
+        assert!(app.drill_probe.is_none());
+
+        // A stale resolution for a tx no longer in the drill is a no-op.
+        app.apply(Update::DrillResolved {
+            txid: "z".repeat(64),
+            total: Some(1),
+            values: vec![Some(1)],
+        });
+        assert!(matches!(
+            app.drill.as_ref().unwrap().parsed.input_total,
+            InputTotal::Known(500_000)
+        ));
     }
 
     #[test]
@@ -1120,6 +1256,24 @@ mod tests {
     }
 
     #[test]
+    fn a_late_tx_response_after_close_does_not_reopen_the_drill() {
+        let (mut app, mut rx) = app();
+        app.apply(Update::MinedBlock(block(100, 1_000)));
+        select_first_block(&mut app);
+        app.on_key(press(KeyCode::Enter)); // block detail
+        app.on_key(press(KeyCode::Enter)); // request the selected tx
+        let _ = rx.try_recv();
+        app.apply(Update::SearchTx(detail())); // first response opens the drill
+        assert_eq!(app.focus, Focus::Drill);
+        app.on_key(press(KeyCode::Esc)); // close back to the tx list
+        assert_eq!(app.focus, Focus::Block);
+        // A stale response from an earlier walk must not reopen the drill.
+        app.apply(Update::SearchTx(detail()));
+        assert!(app.drill.is_none(), "the stale tx response is dropped");
+        assert_eq!(app.focus, Focus::Block);
+    }
+
+    #[test]
     fn a_standalone_tx_returns_straight_to_the_list() {
         let (mut app, _rx) = app();
         app.view = View::Mempool;
@@ -1133,7 +1287,7 @@ mod tests {
     #[test]
     fn down_in_a_block_tx_walks_the_tx_list() {
         let (mut app, mut rx) = app();
-        app.apply(Update::MinedBlock(block(100, 1_000)));
+        app.apply(Update::MinedBlock(block_two_txs(100, 1_000)));
         select_first_block(&mut app);
         app.on_key(press(KeyCode::Enter));
         app.on_key(press(KeyCode::Enter));
@@ -1145,9 +1299,24 @@ mod tests {
     }
 
     #[test]
+    fn walking_a_single_tx_block_does_not_refetch() {
+        let (mut app, mut rx) = app();
+        app.apply(Update::MinedBlock(block(100, 1_000))); // one tx
+        select_first_block(&mut app);
+        app.on_key(press(KeyCode::Enter)); // block detail
+        app.on_key(press(KeyCode::Enter)); // fetch the only tx
+        assert!(matches!(rx.try_recv(), Ok(Request::Transaction(_))));
+        app.apply(Update::SearchTx(detail())); // drill opens
+        // Walking within a one-tx block stays put and sends nothing.
+        app.on_key(press(KeyCode::Down));
+        app.on_key(press(KeyCode::Char('n')));
+        assert!(rx.try_recv().is_err(), "no redundant fetch for a single tx");
+    }
+
+    #[test]
     fn n_in_a_block_tx_requests_another_tx() {
         let (mut app, mut rx) = app();
-        app.apply(Update::MinedBlock(block(100, 1_000)));
+        app.apply(Update::MinedBlock(block_two_txs(100, 1_000)));
         select_first_block(&mut app);
         app.on_key(press(KeyCode::Enter));
         app.on_key(press(KeyCode::Enter));
