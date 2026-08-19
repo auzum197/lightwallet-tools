@@ -16,7 +16,7 @@ or through Tor or Nym without changing call sites.
 
 ```mermaid
 flowchart LR
-  client["client stack<br/>lwcli, lightwallet-core"]
+  client["client stack<br/>lwcli, lwtui, lightwallet-core"]
   bindings["variant bindings<br/>canonical, crosslink"]
   endpoints["indexer endpoints<br/>lightwalletd / zaino"]
 
@@ -31,7 +31,9 @@ flowchart LR
 - [`lightwallet-core`](crates/core): the client layer proper, typed access to indexers that is generic over both variant and transport. Its README covers taking it as a dependency.
 - [`lightwallet-transport-tor`](crates/transport-tor): tonic channels over Tor via arti, each channel its own circuit-isolation domain.
 - [`lightwallet-transport-nym`](crates/transport-nym): tonic channels through the Nym mixnet via a running `nym-socks5-client` (experimental).
-- [`lightwallet-cli`](crates/cli): `lwcli`, a one-shot point-at-anything debug client covering the full RPC surface.
+- [`lightwallet-cli`](tools/cli): `lwcli`, a one-shot point-at-anything debug client covering the full RPC surface.
+- [`lightwallet-tui`](tools/tui): `lwtui`, a live terminal monitor for indexers: mempool tail, block explorer, and tx drill-down.
+- [`lightwallet-txview`](tools/txview): shared transaction projection (`ParsedTx`) used by `lwcli` and `lwtui`.
 - [`lightwallet-test-support`](crates/test-support): in-memory mock endpoints with fault injection, plus a SOCKS5 test server.
 
 ## Development
