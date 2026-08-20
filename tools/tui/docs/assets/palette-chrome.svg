@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="122" viewBox="0 0 1180 122" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+<rect width="1180" height="122" fill="#181818"/>
+<rect x="16" y="16" width="104" height="56" rx="6" fill="#181818" stroke="#2c2c28" stroke-width="1"/>
+<text x="68" y="88" fill="#e8e3d3" font-size="12" text-anchor="middle">bg</text>
+<text x="68" y="102" fill="#8f8a7c" font-size="11" text-anchor="middle">#181818</text>
+<rect x="132" y="16" width="104" height="56" rx="6" fill="#1f1f1d" stroke="#2c2c28" stroke-width="1"/>
+<text x="184" y="88" fill="#e8e3d3" font-size="12" text-anchor="middle">surface</text>
+<text x="184" y="102" fill="#8f8a7c" font-size="11" text-anchor="middle">#1f1f1d</text>
+<rect x="248" y="16" width="104" height="56" rx="6" fill="#e8e3d3" stroke="#2c2c28" stroke-width="1"/>
+<text x="300" y="88" fill="#e8e3d3" font-size="12" text-anchor="middle">ink</text>
+<text x="300" y="102" fill="#8f8a7c" font-size="11" text-anchor="middle">#e8e3d3</text>
+<rect x="364" y="16" width="104" height="56" rx="6" fill="#8f8a7c" stroke="#2c2c28" stroke-width="1"/>
+<text x="416" y="88" fill="#e8e3d3" font-size="12" text-anchor="middle">dim</text>
+<text x="416" y="102" fill="#8f8a7c" font-size="11" text-anchor="middle">#8f8a7c</text>
+<rect x="480" y="16" width="104" height="56" rx="6" fill="#2c2c28" stroke="#2c2c28" stroke-width="1"/>
+<text x="532" y="88" fill="#e8e3d3" font-size="12" text-anchor="middle">rule</text>
+<text x="532" y="102" fill="#8f8a7c" font-size="11" text-anchor="middle">#2c2c28</text>
+<rect x="596" y="16" width="104" height="56" rx="6" fill="#a8d5d5" stroke="#2c2c28" stroke-width="1"/>
+<text x="648" y="88" fill="#e8e3d3" font-size="12" text-anchor="middle">accent-cyan</text>
+<text x="648" y="102" fill="#8f8a7c" font-size="11" text-anchor="middle">#a8d5d5</text>
+<rect x="712" y="16" width="104" height="56" rx="6" fill="#d3a050" stroke="#2c2c28" stroke-width="1"/>
+<text x="764" y="88" fill="#e8e3d3" font-size="12" text-anchor="middle">accent-gold</text>
+<text x="764" y="102" fill="#8f8a7c" font-size="11" text-anchor="middle">#d3a050</text>
+<rect x="828" y="16" width="104" height="56" rx="6" fill="#c98443" stroke="#2c2c28" stroke-width="1"/>
+<text x="880" y="88" fill="#e8e3d3" font-size="12" text-anchor="middle">orange</text>
+<text x="880" y="102" fill="#8f8a7c" font-size="11" text-anchor="middle">#c98443</text>
+<rect x="944" y="16" width="104" height="56" rx="6" fill="#a0a344" stroke="#2c2c28" stroke-width="1"/>
+<text x="996" y="88" fill="#e8e3d3" font-size="12" text-anchor="middle">olive</text>
+<text x="996" y="102" fill="#8f8a7c" font-size="11" text-anchor="middle">#a0a344</text>
+<rect x="1060" y="16" width="104" height="56" rx="6" fill="#c98a72" stroke="#2c2c28" stroke-width="1"/>
+<text x="1112" y="88" fill="#e8e3d3" font-size="12" text-anchor="middle">coral</text>
+<text x="1112" y="102" fill="#8f8a7c" font-size="11" text-anchor="middle">#c98a72</text>
+</svg>

@@ -1,0 +1,7 @@
+# Local design scratch: preview rasters and the ad-hoc dither/ui generators.
+# palette-preview.py is tracked (it produces the committed docs/assets SVGs).
+PROTOTYPE-layout.html
+scripts/*.png
+scripts/ui-cells.txt
+scripts/dither-preview.py
+scripts/ui-preview.py
