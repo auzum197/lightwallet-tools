@@ -4,6 +4,8 @@
 
 Chrome (foreground/UI). Never ANSI 0-15.
 
+![chrome tokens](docs/assets/palette-chrome.svg)
+
 | token       | rgb     | role                           |
 |-------------|---------|--------------------------------|
 | bg          | #181818 | app ground, painted every cell |
@@ -21,6 +23,8 @@ Gradient body, dither fields only. These values are the source hues already
 dimmed 40% toward `bg`; the dim factor is the single brightness knob, held at
 its default and applied at the palette level, not at runtime.
 
+![gradient tokens](docs/assets/palette-gradient.svg)
+
 | token      | rgb     |
 |------------|---------|
 | tan-dim    | #624e34 |
@@ -32,14 +36,19 @@ its default and applied at the palette level, not at runtime.
 | teal-deep  | #39554e |
 | teal       | #435c54 |
 
-## Dither gradient (`--experimental-dither`)
+## Dither gradient (`--experimental-dither[-braille]`)
 
-An idle animation for empty panes: the reserved tx column and the empty
-mempool/blocks/results states. One animated surface per screen. Gradients are
-empty-space material, never under text, lists, tables, or code.
+An idle animation in the empty tail of the focused pane — the tx list (mempool)
+or the tx view (an open drill), never any other pane. The band fills from just
+below the pane's last content line down through the footer, and the field fades
+toward its top edge (full strength at the bottom row, `OPACITY·y`), so it
+anchors to the screen bottom and dissolves up toward the content — visibly
+reaching about halfway. It fills only blank cells, so it never covers a row, and
+its background is the app ground, so it blends into the pane rather than reading
+as a loading screen.
 
-`src/dither.rs` renders it, `App` owns the clock, `ui::empty_surface` places
-it under the one-line hint.
+`src/dither.rs` renders it, `App` owns the clock, `ui::gradient_band` places it
+over the focused pane computed by `ui::focused_pane`.
 
 ### Value field
 
@@ -63,17 +72,25 @@ cell. No allocation in the render path.
 ### Color
 
 Value drives glyph density, blob position drives hue. Per cell the hue is the
-blob colors (`sand`←b1, `rust`←b2, `grad-olive`←b3) blended by the same
-falloff weights, over a `tan-faint` floor where every blob is far, then washed
-`greige` at the top and `teal-deep` at the bottom. A cell near b2 reads rust,
-its shade coverage says how bright.
+blob colors (`sand`←b1, `rust`←b2, `grad-olive`←b3) weighted by the cubed
+falloffs, over a `tan-faint` floor where every blob is far, then washed
+`greige` at the top and `teal-deep` at the bottom. Cubing sharpens toward the
+nearest blob so the hues stay saturated instead of averaging to one brown,
+while still blending smoothly across overlaps. A cell near b2 reads rust, its
+shade coverage says how bright.
 
 ### Dither
 
-Bayer 8×8, threshold `(M[y%8][x%8] + 0.5) / 64`. Shade ramp
-`[' ','░','▒','▓','█']`. Two-color cell: `bg` = hue sunk halfway to ground,
-`fg` = hue, glyph = `SHADES[floor(v·4 + bayer)]`, the shade interpolating
-between the two stops. Every cell paints its own `bg`.
+Bayer 8×8, threshold `(M[y%8][x%8] + 0.5) / 64`. Every cell's `bg` is the app
+ground, so the field blends into the pane; the `fg` hue is faded toward the
+ground by an opacity of `0.45`, so it reads as a faint material. Two charsets:
+
+- **Blocks** (`--experimental-dither`, default). Ramp `[' ','░','▒','▓','█']`,
+  glyph = `SHADES[floor(v·4 + bayer)]`. Near-universal, cell-aligned.
+- **Braille** (`--experimental-dither-braille`). 2×4 dots per cell, each on
+  when its subpixel value clears the Bayer threshold. Finer density. Font
+  support is a gamble (dots misalign or tofu), so it is opt-in and takes
+  precedence when both flags are passed.
 
 ### Motion
 
@@ -81,8 +98,10 @@ between the two stops. Every cell paints its own `bg`.
 step so the frame rate caps near 11fps and frozen frames diff to nothing. The
 loop never repeats, it drifts.
 
-Pauses (freezes on the last frame) on input focus (`/` search, `?` help),
-while a tx is open, on manual pause, and after 10s idle.
+Pauses (freezes on the last frame) on input focus (`/` search, `?` help, which
+take over the footer) and on manual pause. It never idles out, so it keeps
+drifting whether or not the user is typing. An open tx does not pause it; the
+strip lives in the footer, not the tx pane.
 
 ### Degrade
 

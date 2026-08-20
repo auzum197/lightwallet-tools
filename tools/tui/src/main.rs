@@ -50,11 +50,16 @@ struct Args {
     #[arg(long, value_enum, default_value_t = OutputMode::Tui)]
     output: OutputMode,
 
-    /// Paint an animated dither gradient behind empty panes. Needs a truecolor
-    /// terminal (`COLORTERM=truecolor`); falls back to a flat pane otherwise or
-    /// when `NO_COLOR` is set.
+    /// Paint an animated dither gradient (shade blocks) behind empty panes.
+    /// Needs a truecolor terminal (`COLORTERM=truecolor`); falls back to a flat
+    /// pane otherwise or when `NO_COLOR` is set.
     #[arg(long)]
     experimental_dither: bool,
+
+    /// Same gradient rendered in braille dots: finer, but the glyphs depend on
+    /// terminal font support. Takes precedence over `--experimental-dither`.
+    #[arg(long)]
+    experimental_dither_braille: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -83,7 +88,15 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let variant: Variant = args.variant.into();
     let target = args.target_spacing.unwrap_or(App::DEFAULT_TARGET);
-    let dither = args.experimental_dither && dither::supported();
+    let dither = if !dither::supported() {
+        None
+    } else if args.experimental_dither_braille {
+        Some(dither::Charset::Braille)
+    } else if args.experimental_dither {
+        Some(dither::Charset::Blocks)
+    } else {
+        None
+    };
 
     let (tx, rx) = mpsc::unbounded_channel();
     let tail = tokio::spawn(net::run(args.url.clone(), variant, tx.clone()));

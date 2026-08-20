@@ -41,6 +41,86 @@ pub fn draw(f: &mut Frame, app: &App) {
         render_help(f, body);
     }
     render_footer(f, footer, app);
+    // The gradient rides the empty space at the bottom of the focused pane, so
+    // it renders last, over whatever is already drawn (skipping filled cells).
+    gradient_band(f, body, footer, app);
+}
+
+/// The column range the gradient may fill: the focused tx list (mempool) or the
+/// focused tx view (an open drill), else nothing. Mirrors the body layout so the
+/// band lines up with the pane that holds focus.
+fn focused_pane(body: Rect, app: &App) -> Option<Rect> {
+    let block_ctx = app.block_detail.is_some()
+        && (app.focus == Focus::Block
+            || (app.drill.is_some() && app.drill_origin == DrillOrigin::Block));
+    match app.focus {
+        Focus::Drill if block_ctx && body.width >= 120 => {
+            let [_, _, right] = Layout::horizontal([
+                Constraint::Length(36),
+                Constraint::Fill(3),
+                Constraint::Fill(4),
+            ])
+            .areas(body);
+            Some(right)
+        }
+        Focus::Drill if block_ctx && body.width >= 84 => {
+            let [_, right] =
+                Layout::horizontal([Constraint::Fill(3), Constraint::Fill(4)]).areas(body);
+            Some(right)
+        }
+        Focus::Drill if block_ctx => Some(body),
+        Focus::Drill => {
+            let [_, detail] =
+                Layout::horizontal([Constraint::Min(0), Constraint::Length(DETAIL_RIGHT)])
+                    .areas(body);
+            Some(detail)
+        }
+        // The mempool is the tx list, so its tail carries the gradient (empty or
+        // not). The blocks and results lists don't, keeping the first-load
+        // "loading blocks…" screen flat.
+        Focus::List if app.view == View::Mempool => Some(body),
+        _ => None,
+    }
+}
+
+/// Paint the gradient into the focused pane's empty tail, rising from the
+/// screen bottom to halfway between it and the pane's last content line. Fills
+/// only blank cells, so it never covers a row, and its background is the app
+/// ground, so it blends into the pane.
+fn gradient_band(f: &mut Frame, body: Rect, footer: Rect, app: &App) {
+    let Some(charset) = app.dither else { return };
+    let Some(pane) = focused_pane(body, app) else {
+        return;
+    };
+    let buf = f.buffer_mut();
+
+    // The last row in the pane (body only) that carries content. Skip the first
+    // column: a pane's left border runs the full height and would otherwise mark
+    // every row as filled, hiding the empty tail below a short tx detail.
+    let mut last = pane.top();
+    for y in pane.top()..pane.bottom() {
+        let filled = (pane.left().saturating_add(1)..pane.right())
+            .any(|x| buf.cell((x, y)).is_some_and(|c| c.symbol() != " "));
+        if filled {
+            last = y;
+        }
+    }
+    let bottom = footer.bottom().saturating_sub(1);
+    // The band fills the empty tail from just below the last content line to the
+    // screen bottom. The field is sampled over this whole height, so the bright
+    // lobes sit near the middle and fade up toward the content and down into the
+    // footer, rather than floating as a short strip.
+    let top = last + 1;
+    if bottom <= top {
+        return;
+    }
+    let region = Rect {
+        x: pane.x,
+        y: top,
+        width: pane.width,
+        height: bottom + 1 - top,
+    };
+    dither::render(buf, region, app.dither_time(), charset, true);
 }
 
 /// How far an unfocused panel's colors slide toward the background. Enough to
@@ -93,7 +173,7 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
     ));
     match breadcrumb(app) {
         Some(mut crumb) => spans.append(&mut crumb),
-        None => spans.push(status_span(app)),
+        None => spans.append(&mut status_line(app)),
     }
     if app.focus == Focus::Drill {
         let mode = if app.raw_mode { "raw" } else { "human" };
@@ -134,22 +214,36 @@ fn indicator(app: &App) -> Span<'static> {
     }
 }
 
-fn status_span(app: &App) -> Span<'static> {
-    let (text, rgb) = match &app.phase {
-        Phase::Connecting => ("connecting…".to_string(), theme::FAINT),
-        Phase::Reconnecting(err) => (format!("reconnecting… ({err})"), theme::WARN),
-        Phase::Live => (
-            format!(
-                "tip {}  ·  {}  ·  {} pending{}",
-                app.tip,
-                since_block(app),
-                app.rows.len(),
-                if app.paused { "  ·  PAUSED" } else { "" }
-            ),
-            theme::FAINT,
-        ),
-    };
-    Span::styled(text, Style::default().fg(color(rgb)))
+fn status_line(app: &App) -> Vec<Span<'static>> {
+    match &app.phase {
+        Phase::Connecting => vec![Span::styled("connecting…", fg(theme::FAINT))],
+        Phase::Reconnecting(err) => {
+            vec![Span::styled(
+                format!("reconnecting… ({err})"),
+                fg(theme::WARN),
+            )]
+        }
+        Phase::Live => {
+            let sep = || Span::styled("  ·  ", fg(theme::FAINT));
+            // tip is a value (gold), the pending count a live readout (orange),
+            // paused an alarm (red). The rest stays quiet.
+            let mut spans = vec![
+                Span::styled(format!("tip {}", app.tip), fg(theme::ACCENT_HI)),
+                sep(),
+                Span::styled(since_block(app), fg(theme::FAINT)),
+                sep(),
+                Span::styled(format!("{} pending", app.rows.len()), fg(theme::WARN)),
+            ];
+            if app.paused {
+                spans.push(sep());
+                spans.push(Span::styled(
+                    "PAUSED",
+                    fg(theme::BAD).add_modifier(Modifier::BOLD),
+                ));
+            }
+            spans
+        }
+    }
 }
 
 fn since_block(app: &App) -> String {
@@ -281,7 +375,7 @@ fn left_pane(title: &'static str) -> Block<'static> {
         .borders(Borders::LEFT)
         .border_style(fg(theme::BORDER))
         .padding(Padding::horizontal(1))
-        .title(title)
+        .title(Span::styled(title, fg(theme::ACCENT_CYAN)))
 }
 
 /// the column's width so opening a tx doesn't shift the layout.
@@ -293,7 +387,7 @@ fn render_tx_pane(f: &mut Frame, area: Rect, app: &App) {
     let outer = left_pane("transaction");
     let inner = outer.inner(area);
     f.render_widget(outer, area);
-    empty_surface(f, inner, "select a tx · enter", app);
+    placeholder(f, inner, "select a tx · enter");
 }
 
 fn render_block_detail(f: &mut Frame, area: Rect, app: &App) {
@@ -389,17 +483,6 @@ fn placeholder(f: &mut Frame, area: Rect, text: &str) {
     );
 }
 
-/// An empty pane's placeholder over the dither gradient when it's on, or the
-/// plain hint when it isn't. The gradient is empty-space material: the one hint
-/// line rides on top, the rest of the rect is the field. This is the only
-/// animated surface a given screen shows.
-fn empty_surface(f: &mut Frame, area: Rect, text: &str, app: &App) {
-    if app.dither_enabled {
-        dither::render(f.buffer_mut(), area, app.dither_time());
-    }
-    placeholder(f, area, text);
-}
-
 fn render_mempool(f: &mut Frame, area: Rect, app: &App) {
     if app.rows.is_empty() {
         let msg = match &app.phase {
@@ -407,7 +490,7 @@ fn render_mempool(f: &mut Frame, area: Rect, app: &App) {
             Phase::Connecting => "connecting…".to_string(),
             Phase::Reconnecting(_) => "reconnecting…".to_string(),
         };
-        empty_surface(f, area, &msg, app);
+        placeholder(f, area, &msg);
         return;
     }
     let items: Vec<ListItem> = app.rows.iter().map(mempool_item).collect();
@@ -432,13 +515,14 @@ fn mempool_item(row: &Row) -> ListItem<'static> {
     };
     let value = format!("{:>18}", value_str(&tx.value));
     let line = Line::from(vec![
-        Span::styled(age, Style::default().fg(color(theme::FAINT))),
+        // Age ticks up live, so it reads as an orange live readout.
+        Span::styled(age, Style::default().fg(color(theme::WARN))),
         Span::raw("  "),
         Span::styled(format!("{id:<18}"), Style::default().fg(color(theme::TEXT))),
         Span::raw("  "),
         value_span(&tx.value, value),
         Span::raw("  "),
-        Span::styled(pools, Style::default().fg(color(theme::TEXT))),
+        Span::styled(pools, Style::default().fg(color(theme::ACCENT_CYAN))),
     ]);
     ListItem::new(line)
 }
@@ -451,7 +535,7 @@ fn render_blocks(f: &mut Frame, area: Rect, app: &App) {
             "height", "hash", "age", "txs", "in", "out"
         ),
         Style::default()
-            .fg(color(theme::FAINT))
+            .fg(color(theme::ACCENT_CYAN))
             .add_modifier(Modifier::BOLD),
     )]);
     f.render_widget(Paragraph::new(header), head);
@@ -462,7 +546,7 @@ fn render_blocks(f: &mut Frame, area: Rect, app: &App) {
             Phase::Connecting => "connecting…".to_string(),
             Phase::Reconnecting(_) => "reconnecting…".to_string(),
         };
-        empty_surface(f, list, &msg, app);
+        placeholder(f, list, &msg);
         return;
     }
     let now = now_unix();
@@ -479,11 +563,26 @@ fn block_item(b: &BlockRow, now: u64, dim: bool) -> ListItem<'static> {
     } else {
         Style::default().fg(color(theme::TEXT))
     };
+    // Height is the spine of the list: gold on a live row, faded when reorged
+    // or disconnected.
+    let height = if b.reorged || dim {
+        faint
+    } else {
+        Style::default().fg(color(theme::ACCENT_HI))
+    };
     let age = now.saturating_sub(b.time as u64);
     let mut spans = vec![
-        Span::styled(format!("{:>9}", b.height), text),
+        Span::styled(format!("{:>9}", b.height), height),
         Span::raw("  "),
-        Span::styled(format!("{:<13}", short_block_hash(&b.hash)), faint),
+        // The hash is a literal, so it reads olive on a live row.
+        Span::styled(
+            format!("{:<13}", short_block_hash(&b.hash)),
+            if b.reorged || dim {
+                faint
+            } else {
+                Style::default().fg(color(theme::OLIVE))
+            },
+        ),
         Span::raw("  "),
         Span::styled(format!("{age:>4}s"), faint),
         Span::raw("  "),
@@ -504,18 +603,13 @@ fn render_results(f: &mut Frame, area: Rect, app: &App) {
     let header = Line::from(Span::styled(
         format!("  results · {}", app.taddr_label),
         Style::default()
-            .fg(color(theme::FAINT))
+            .fg(color(theme::ACCENT_CYAN))
             .add_modifier(Modifier::BOLD),
     ));
     f.render_widget(Paragraph::new(header), head);
 
     if app.taddr_hits.is_empty() {
-        empty_surface(
-            f,
-            list,
-            &format!("no transactions for {}", app.taddr_label),
-            app,
-        );
+        placeholder(f, list, &format!("no transactions for {}", app.taddr_label));
         return;
     }
     let items: Vec<ListItem> = app.taddr_hits.iter().map(result_item).collect();
@@ -533,7 +627,7 @@ fn result_item(hit: &TaddrHit) -> ListItem<'static> {
     let line = Line::from(vec![
         Span::styled(
             format!("{:>9}", hit.height),
-            Style::default().fg(color(theme::FAINT)),
+            Style::default().fg(color(theme::ACCENT_HI)),
         ),
         Span::raw("  "),
         Span::styled(
@@ -552,11 +646,16 @@ fn result_item(hit: &TaddrHit) -> ListItem<'static> {
 fn render_selectable(f: &mut Frame, area: Rect, items: Vec<ListItem>, selected: Option<usize>) {
     let mut state = ListState::default();
     state.select(selected);
-    // A soft slate fill marks the selection and leaves each column its own hue,
-    // rather than a full reverse bar that flattens the row to two tones.
+    // A warm lifted fill plus a bold row marks the selection and leaves each
+    // column its own hue, rather than a full reverse bar that flattens the row
+    // to two tones. The gold caret carries the cursor.
     let list = List::new(items)
-        .highlight_style(Style::default().bg(color(theme::SEL_BG)))
-        .highlight_symbol("› ")
+        .highlight_style(
+            Style::default()
+                .bg(color(theme::SEL_FILL))
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▍ ")
         .highlight_spacing(HighlightSpacing::Always);
     f.render_stateful_widget(list, area, &mut state);
 }
@@ -594,9 +693,11 @@ fn input_total_str(total: &InputTotal) -> Option<String> {
 }
 
 fn value_span(value: &Value, text: String) -> Span<'static> {
+    // Values read gold; a shielded amount is coral, marking it redacted.
     let rgb = match value {
-        Value::Shielded => theme::WARN,
-        _ => theme::TEXT,
+        Value::Shielded => theme::POOL_IRONWOOD,
+        Value::Clear(_) => theme::ACCENT_HI,
+        Value::Unknown => theme::FAINT,
     };
     Span::styled(text, Style::default().fg(color(rgb)))
 }
@@ -620,10 +721,14 @@ fn render_drill(f: &mut Frame, area: Rect, app: &App) {
             &app.drill_input_values,
         )
     };
+    // Clamp the scroll to the content so the last line can reach the top edge
+    // but no further, never scrolling into blank below.
+    let view_h = block.inner(area).height;
+    let max = (lines.len() as u16).saturating_sub(view_h);
     f.render_widget(
         Paragraph::new(lines)
             .block(block)
-            .scroll((app.drill_scroll, 0))
+            .scroll((app.drill_scroll.min(max), 0))
             .style(Style::default().fg(color(theme::TEXT))),
         area,
     );
@@ -688,8 +793,8 @@ fn human_lines(
     }
     lines.push(Line::from(""));
 
-    // Value and fee lead, so they stay visible above a long input/output list
-    // (a block-opened drill can't scroll the pane).
+    // Value and fee lead, so they read near the top of a long input/output
+    // list before the reader scrolls down.
     lines.push(Line::from(vec![
         Span::styled("value    ", fg(theme::FAINT)),
         value_span(&tx.value, value_str(&tx.value)),
@@ -980,7 +1085,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     }
     let keys = match app.focus {
         Focus::Drill => "r raw⇄human · j/k scroll · n/N next · y/Y copy json/raw · esc close",
-        Focus::Block => "j/k select tx · enter open tx · y copy txid · esc close",
+        Focus::Block => "j/k select · n/N walk tx · enter open · y copy txid · esc close",
         _ => {
             "tab view · / search · enter detail · y/Y copy json/raw · space pause · ? help · q quit"
         }
@@ -1011,12 +1116,15 @@ fn render_help(f: &mut Frame, area: Rect) {
         ("?", "toggle this help"),
         ("Tab", "switch mempool ⇄ blocks"),
         ("/", "search: height, txid, or t-address"),
-        ("j / k", "move selection (scroll in a drill-down)"),
+        (
+            "j / k  ·  ↑ / ↓",
+            "move selection (scroll a focused drill-down)",
+        ),
         ("Enter", "open detail: a block, then a tx; a mempool tx"),
         ("Esc", "close the detail or results view"),
         ("r", "drill-down: raw ⇄ human"),
         ("y / Y", "copy tx JSON / raw hex to clipboard"),
-        ("n / N", "walk t-address results"),
+        ("n / N", "walk txs: block list or t-address results"),
         ("Space", "pause live-follow"),
     ];
     let mut lines = vec![
@@ -1091,7 +1199,7 @@ mod tests {
 
     fn app() -> App {
         let (tx, _rx) = mpsc::unbounded_channel();
-        App::new(tx, App::DEFAULT_TARGET, false)
+        App::new(tx, App::DEFAULT_TARGET, None)
     }
 
     fn render(app: &App) -> String {
@@ -1212,10 +1320,13 @@ mod tests {
         };
         let mut app = app();
         app.awaiting_tx = true;
-        app.apply(Update::SearchTx(TxDetail {
-            parsed,
-            raw: Vec::new(),
-        }));
+        app.apply(Update::SearchTx {
+            detail: TxDetail {
+                parsed,
+                raw: Vec::new(),
+            },
+            height: 0,
+        });
         let out = render_sized(&app, 100, 30);
         assert!(out.contains("staking"), "the staking section renders");
         assert!(

@@ -130,7 +130,7 @@ pub async fn run(mut rx: UnboundedReceiver<Update>) -> Result<()> {
             },
             // NDJSON issues no queries, so search results and the drill's
             // input-resolution progress never reach here.
-            Update::SearchTx(_)
+            Update::SearchTx { .. }
             | Update::SearchBlock(_)
             | Update::SearchTaddr { .. }
             | Update::SearchError(_)

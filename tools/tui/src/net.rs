@@ -799,7 +799,10 @@ impl SearchClient {
         let fee_base = parsed.fee_base;
         // Open the pane at once; the transparent input total streams in behind it.
         if tx
-            .send(Update::SearchTx(TxDetail { parsed, raw: data }))
+            .send(Update::SearchTx {
+                detail: TxDetail { parsed, raw: data },
+                height,
+            })
             .is_err()
         {
             return;

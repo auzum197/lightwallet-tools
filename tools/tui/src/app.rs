@@ -10,6 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use lightwallet_txview::ParsedTx;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
+use crate::dither::Charset;
 use crate::health::{self, DEFAULT_TARGET_SPACING, Health};
 use crate::net::Request;
 
@@ -145,8 +146,13 @@ pub enum Update {
     Reorg {
         at_height: u64,
     },
-    /// A found transaction, to open in the drill-down.
-    SearchTx(TxDetail),
+    /// A found transaction, to open in the drill-down, with the block height it
+    /// was mined at (0 for a mempool tx). A standalone txid search uses the
+    /// height to pull in that block for context.
+    SearchTx {
+        detail: TxDetail,
+        height: u64,
+    },
     /// Progress while the open drill's transparent inputs resolve: the funding
     /// tx being fetched (display order), or `None` once that step ends. Guarded
     /// by `txid` so a late probe for a closed or replaced drill is dropped.
@@ -177,10 +183,6 @@ pub enum Update {
 
 /// The t-address search window: blocks back from tip, snapshotted at submit.
 pub const SEARCH_WINDOW: u64 = 10_000;
-
-/// Seconds without a keypress before the gradient pauses, treating the user as
-/// away rather than watching.
-const DITHER_IDLE_SECS: u64 = 10;
 
 const MAX_ROWS: usize = 5_000;
 const MAX_BLOCKS: usize = 256;
@@ -229,6 +231,10 @@ pub struct App {
     /// the tx that asked for it. Gating `SearchTx` on this drops stale
     /// responses instead of reopening the drill under them.
     pub(crate) awaiting_tx: bool,
+    /// Height of a block being fetched to become the context for a standalone
+    /// tx search, so its arrival attaches to the open drill instead of taking
+    /// over the view.
+    pending_ctx_block: Option<u64>,
 
     /// The block opened in the block-detail pane, and the selected tx within it.
     pub block_detail: Option<BlockRow>,
@@ -252,20 +258,22 @@ pub struct App {
     start: Instant,
     req: UnboundedSender<Request>,
 
-    /// Whether the dither gradient is on: the flag was passed and the terminal
-    /// can render it.
-    pub dither_enabled: bool,
+    /// The dither gradient's charset when it's on (a flag was passed and the
+    /// terminal can render it), `None` when off.
+    pub dither: Option<Charset>,
     /// Accumulated field time, advancing only while the gradient is active, so
     /// pausing freezes the animation on its last frame.
     dither_secs: f32,
     /// Wall clock of the last tick, to measure the field's per-frame step.
     last_tick: Instant,
-    /// Wall clock of the last keypress, for the idle pause.
-    last_input: Instant,
 }
 
 impl App {
-    pub fn new(req: UnboundedSender<Request>, target_spacing: u64, dither_enabled: bool) -> Self {
+    pub fn new(
+        req: UnboundedSender<Request>,
+        target_spacing: u64,
+        dither: Option<Charset>,
+    ) -> Self {
         let now = Instant::now();
         Self {
             view: View::Blocks,
@@ -293,6 +301,7 @@ impl App {
             drill_input_values: Vec::new(),
             pending_origin: DrillOrigin::Standalone,
             awaiting_tx: false,
+            pending_ctx_block: None,
             block_detail: None,
             block_tx_sel: 0,
             taddr_hits: Vec::new(),
@@ -306,10 +315,9 @@ impl App {
             next_block_seq: 0,
             start: now,
             req,
-            dither_enabled,
+            dither,
             dither_secs: 0.0,
             last_tick: now,
-            last_input: now,
         }
     }
 
@@ -319,23 +327,22 @@ impl App {
     }
 
     /// Advance the field clock by the elapsed frame, but only while the gradient
-    /// is active. Paused, focused on input, drilled into a tx, or idle: the clock
-    /// holds and the surface freezes on its last frame.
+    /// is active. Paused or focused on search/help, the clock holds and the
+    /// surface freezes on its last frame.
     pub fn tick_dither(&mut self) {
         let now = Instant::now();
         let dt = now.duration_since(self.last_tick).as_secs_f32();
         self.last_tick = now;
-        if self.dither_active(now) {
+        if self.dither_active() {
             self.dither_secs += dt;
         }
     }
 
-    fn dither_active(&self, now: Instant) -> bool {
-        self.dither_enabled
-            && !self.paused
-            && !matches!(self.focus, Focus::Search | Focus::Help)
-            && self.drill.is_none()
-            && now.duration_since(self.last_input).as_secs() < DITHER_IDLE_SECS
+    fn dither_active(&self) -> bool {
+        // The gradient runs continuously while visible: only a manual pause or
+        // search/help (which take over the footer) freeze it. It never idles
+        // out, so it keeps drifting whether or not the user is typing.
+        self.dither.is_some() && !self.paused && !matches!(self.focus, Focus::Search | Focus::Help)
     }
 
     /// The field time for the current frame, `t` advancing 0.5 units a second of
@@ -403,10 +410,18 @@ impl App {
                 }
                 self.footer_msg = Some(format!("reorg: height {at_height} replaced"));
             }
-            Update::SearchTx(detail) => {
+            Update::SearchTx { detail, height } => {
                 if self.awaiting_tx {
                     self.awaiting_tx = false;
-                    self.open_drill(detail, self.pending_origin);
+                    let origin = self.pending_origin;
+                    self.open_drill(detail, origin);
+                    // A standalone txid search also pulls in its mining block, so
+                    // the block pane shows alongside the tx. A mempool hit
+                    // (height 0) has no block.
+                    if origin == DrillOrigin::Standalone && height > 0 {
+                        self.pending_ctx_block = Some(height);
+                        let _ = self.req.send(Request::Block(height));
+                    }
                 }
             }
             Update::DrillProbe { txid, funder } => {
@@ -428,15 +443,20 @@ impl App {
                 }
             }
             Update::SearchBlock(block) => {
-                let height = block.height;
-                self.insert_block(block);
-                self.view = View::Blocks;
-                self.selected_block_seq = self
-                    .blocks
-                    .iter()
-                    .find(|b| b.height == height && !b.reorged)
-                    .map(|b| b.seq);
-                self.footer_msg = None;
+                if self.pending_ctx_block == Some(block.height) {
+                    self.pending_ctx_block = None;
+                    self.attach_ctx_block(block);
+                } else {
+                    let height = block.height;
+                    self.insert_block(block);
+                    self.view = View::Blocks;
+                    self.selected_block_seq = self
+                        .blocks
+                        .iter()
+                        .find(|b| b.height == height && !b.reorged)
+                        .map(|b| b.seq);
+                    self.footer_msg = None;
+                }
             }
             Update::SearchTaddr { addr, window, hits } => {
                 self.taddr_hits = hits;
@@ -447,8 +467,34 @@ impl App {
                 self.focus = Focus::List;
                 self.footer_msg = None;
             }
-            Update::SearchError(msg) => self.footer_msg = Some(msg),
+            Update::SearchError(msg) => {
+                // A failed context-block fetch just leaves the tx standalone.
+                self.pending_ctx_block = None;
+                self.footer_msg = Some(msg);
+            }
         }
+    }
+
+    /// Attach a fetched block as the open drill's context: the block detail and
+    /// tx list show beside the tx, and the drill becomes block-origin so back
+    /// steps to the block's tx list. The drill itself is left as it is.
+    fn attach_ctx_block(&mut self, block: BlockRow) {
+        // Highlight the drilled tx within the block's tx list.
+        let sel = self
+            .drill_txid()
+            .and_then(|id| block.tx_rows.iter().position(|t| t.txid == id));
+        let height = block.height;
+        self.block_tx_sel = sel.unwrap_or(0);
+        self.block_detail = Some(block.clone());
+        self.drill_origin = DrillOrigin::Block;
+        self.insert_block(block);
+        self.view = View::Blocks;
+        self.selected_block_seq = self
+            .blocks
+            .iter()
+            .find(|b| b.height == height && !b.reorged)
+            .map(|b| b.seq);
+        self.footer_msg = None;
     }
 
     /// Insert a tail block newest-front, replacing a live row at the same height
@@ -584,7 +630,6 @@ impl App {
 
     /// Handle a keypress. Returns true to quit.
     pub fn on_key(&mut self, key: KeyEvent) -> bool {
-        self.last_input = Instant::now();
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return true;
         }
@@ -636,11 +681,20 @@ impl App {
                     self.block_tx_sel = i;
                 }
             }
+            // n/N walk the list and open each into the (unfocused) detail pane,
+            // a quick browse; Right/Enter focuses the pane to scroll it.
+            KeyCode::Char('n') => self.walk_block_tx(1),
+            KeyCode::Char('N') => self.walk_block_tx(-1),
             KeyCode::Enter | KeyCode::Right => self.open_block_tx(),
             // No full tx here, so `y` copies the txid; drill in for JSON.
             KeyCode::Char('y') => self.copy_block_txid(),
             KeyCode::Esc | KeyCode::Left => {
+                // Leaving the block context drops the tx kept in the pane, so it
+                // never leaks onto the plain list.
                 self.block_detail = None;
+                self.drill = None;
+                self.drill_probe = None;
+                self.drill_input_values = Vec::new();
                 self.awaiting_tx = false;
                 self.focus = Focus::List;
             }
@@ -651,14 +705,24 @@ impl App {
     /// Fetch the selected block-tx's full bytes into the tx drill; the result
     /// lands as a block-origin drill (third column, back to the tx list).
     fn open_block_tx(&mut self) {
-        if let Some(block) = &self.block_detail
-            && let Some(tx) = block.tx_rows.get(self.block_tx_sel)
-        {
-            self.pending_origin = DrillOrigin::Block;
-            self.awaiting_tx = true;
-            let _ = self.req.send(Request::Transaction(tx.txid.clone()));
-            self.footer_msg = Some("searching tx…".to_string());
+        let Some(txid) = self
+            .block_detail
+            .as_ref()
+            .and_then(|b| b.tx_rows.get(self.block_tx_sel))
+            .map(|t| t.txid.clone())
+        else {
+            return;
+        };
+        // The selected tx is already the open drill (the user stepped back to the
+        // list without closing it): just re-focus the pane, no refetch.
+        if self.drill_txid() == Some(txid.as_str()) {
+            self.focus = Focus::Drill;
+            return;
         }
+        self.pending_origin = DrillOrigin::Block;
+        self.awaiting_tx = true;
+        let _ = self.req.send(Request::Transaction(txid));
+        self.footer_msg = Some("searching tx…".to_string());
     }
 
     fn list_key(&mut self, key: KeyEvent) {
@@ -689,14 +753,8 @@ impl App {
     fn drill_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('r') => self.raw_mode = !self.raw_mode,
-            // In a block-opened tx, up/down keep walking the block's tx list so
-            // the detail is a live preview; elsewhere they scroll the pane.
-            KeyCode::Char('j') | KeyCode::Down if self.drill_origin == DrillOrigin::Block => {
-                self.walk_block_tx(1)
-            }
-            KeyCode::Char('k') | KeyCode::Up if self.drill_origin == DrillOrigin::Block => {
-                self.walk_block_tx(-1)
-            }
+            // Arrows (and j/k) scroll the pane, so a tall tx with many inputs and
+            // outputs reads in full; n/N walk between txs (block list or results).
             KeyCode::Char('j') | KeyCode::Down => {
                 self.drill_scroll = self.drill_scroll.saturating_add(1)
             }
@@ -708,16 +766,18 @@ impl App {
             KeyCode::Char('y') => self.copy_json(),
             KeyCode::Char('Y') => self.copy_raw(),
             KeyCode::Enter | KeyCode::Esc | KeyCode::Left => {
-                self.drill = None;
-                self.drill_probe = None;
-                self.drill_input_values = Vec::new();
                 self.awaiting_tx = false;
-                // A block-opened tx pops back to its block's tx list; every
-                // other origin returns to the plain list.
-                self.focus = match self.drill_origin {
-                    DrillOrigin::Block if self.block_detail.is_some() => Focus::Block,
-                    _ => Focus::List,
-                };
+                // A block-opened tx pops back to its block's tx list but stays
+                // shown in the tx pane, dimmed like any unfocused column; every
+                // other origin closes the drill back to the plain list.
+                if self.drill_origin == DrillOrigin::Block && self.block_detail.is_some() {
+                    self.focus = Focus::Block;
+                } else {
+                    self.drill = None;
+                    self.drill_probe = None;
+                    self.drill_input_values = Vec::new();
+                    self.focus = Focus::List;
+                }
             }
             _ => {}
         }
@@ -974,7 +1034,7 @@ mod tests {
 
     fn app() -> (App, mpsc::UnboundedReceiver<Request>) {
         let (tx, rx) = mpsc::unbounded_channel();
-        (App::new(tx, App::DEFAULT_TARGET, false), rx)
+        (App::new(tx, App::DEFAULT_TARGET, None), rx)
     }
 
     /// A shielded row with no transparent inputs, addressed by `seq`.
@@ -1289,7 +1349,10 @@ mod tests {
         select_first_block(&mut app);
         app.on_key(press(KeyCode::Enter)); // block detail (Focus::Block)
         app.on_key(press(KeyCode::Enter)); // request the selected tx
-        app.apply(Update::SearchTx(detail())); // the search task answers
+        app.apply(Update::SearchTx {
+            detail: detail(),
+            height: 0,
+        }); // the search task answers
         assert_eq!(app.focus, Focus::Drill);
         assert_eq!(app.drill_origin, DrillOrigin::Block);
         assert!(
@@ -1312,14 +1375,92 @@ mod tests {
         app.on_key(press(KeyCode::Enter)); // block detail
         app.on_key(press(KeyCode::Enter)); // request the selected tx
         let _ = rx.try_recv();
-        app.apply(Update::SearchTx(detail())); // first response opens the drill
+        app.apply(Update::SearchTx {
+            detail: detail(),
+            height: 0,
+        }); // first response opens the drill
         assert_eq!(app.focus, Focus::Drill);
-        app.on_key(press(KeyCode::Esc)); // close back to the tx list
+        app.on_key(press(KeyCode::Esc)); // back to the tx list
         assert_eq!(app.focus, Focus::Block);
-        // A stale response from an earlier walk must not reopen the drill.
-        app.apply(Update::SearchTx(detail()));
-        assert!(app.drill.is_none(), "the stale tx response is dropped");
+        // The tx stays shown in the (now dimmed) pane on the way back.
+        assert!(app.drill.is_some(), "the tx keeps showing in the pane");
+        // A stale response from an earlier walk must not jump focus into the
+        // drill.
+        app.apply(Update::SearchTx {
+            detail: detail(),
+            height: 0,
+        });
         assert_eq!(app.focus, Focus::Block);
+    }
+
+    #[test]
+    fn a_tx_search_pulls_in_its_block_for_context() {
+        let (mut app, mut rx) = app();
+        app.tip = 600;
+        app.on_key(press(KeyCode::Char('/')));
+        typed(&"a".repeat(64), &mut app);
+        app.on_key(press(KeyCode::Enter));
+        assert!(matches!(rx.try_recv(), Ok(Request::Transaction(_))));
+        // The tx resolves with its mining height and opens the drill.
+        app.apply(Update::SearchTx {
+            detail: detail(),
+            height: 500,
+        });
+        assert_eq!(app.focus, Focus::Drill);
+        // Which triggers a fetch of that block for the side panes.
+        assert!(matches!(rx.try_recv(), Ok(Request::Block(500))));
+        app.apply(Update::SearchBlock(block(500, 1_000)));
+        assert!(app.block_detail.is_some(), "the block shows as context");
+        assert_eq!(app.drill_origin, DrillOrigin::Block);
+        assert_eq!(app.view, View::Blocks);
+        assert_eq!(app.focus, Focus::Drill, "the tx stays open");
+    }
+
+    #[test]
+    fn leaving_the_block_detail_clears_the_kept_tx() {
+        let (mut app, mut rx) = app();
+        app.apply(Update::MinedBlock(block(100, 1_000)));
+        select_first_block(&mut app);
+        app.on_key(press(KeyCode::Enter)); // block detail
+        app.on_key(press(KeyCode::Enter)); // request the tx
+        let _ = rx.try_recv();
+        app.apply(Update::SearchTx {
+            detail: detail(),
+            height: 0,
+        }); // drill opens
+        app.on_key(press(KeyCode::Esc)); // back to tx list, tx kept
+        assert!(app.drill.is_some());
+        app.on_key(press(KeyCode::Esc)); // leave the block context
+        assert_eq!(app.focus, Focus::List);
+        assert!(
+            app.drill.is_none(),
+            "the kept tx doesn't leak onto the list"
+        );
+    }
+
+    #[test]
+    fn re_entering_the_open_tx_focuses_it_without_refetching() {
+        let (mut app, mut rx) = app();
+        app.apply(Update::MinedBlock(block(100, 1_000)));
+        select_first_block(&mut app);
+        app.on_key(press(KeyCode::Enter)); // block detail (Focus::Block)
+        app.on_key(press(KeyCode::Enter)); // request the selected tx
+        assert!(matches!(rx.try_recv(), Ok(Request::Transaction(_))));
+        app.apply(Update::SearchTx {
+            detail: detail(),
+            height: 0,
+        }); // drill opens
+        app.on_key(press(KeyCode::Esc)); // back to the tx list, tx kept
+        assert_eq!(app.focus, Focus::Block);
+        assert!(app.drill.is_some());
+        // Right re-enters the same tx: it's already in the pane, so it re-focuses
+        // without a second fetch.
+        app.on_key(press(KeyCode::Right));
+        assert_eq!(app.focus, Focus::Drill);
+        assert!(
+            rx.try_recv().is_err(),
+            "the already-open tx must not be refetched"
+        );
     }
 
     #[test]
@@ -1334,16 +1475,36 @@ mod tests {
     }
 
     #[test]
-    fn down_in_a_block_tx_walks_the_tx_list() {
+    fn down_in_a_focused_drill_scrolls_instead_of_walking() {
         let (mut app, mut rx) = app();
         app.apply(Update::MinedBlock(block_two_txs(100, 1_000)));
         select_first_block(&mut app);
         app.on_key(press(KeyCode::Enter));
         app.on_key(press(KeyCode::Enter));
         let _ = rx.try_recv();
-        app.apply(Update::SearchTx(detail()));
-        // Down navigates the block's tx list rather than scrolling the pane.
+        app.apply(Update::SearchTx {
+            detail: detail(),
+            height: 0,
+        });
+        assert_eq!(app.focus, Focus::Drill);
+        // Focused in the drill, Down scrolls the pane and fetches nothing; n walks.
         app.on_key(press(KeyCode::Down));
+        assert_eq!(app.drill_scroll, 1);
+        assert!(rx.try_recv().is_err(), "arrows scroll, they don't walk");
+        app.on_key(press(KeyCode::Char('n')));
+        assert!(matches!(rx.try_recv(), Ok(Request::Transaction(_))));
+    }
+
+    #[test]
+    fn n_walks_the_block_tx_list_from_the_unfocused_pane() {
+        let (mut app, mut rx) = app();
+        app.apply(Update::MinedBlock(block_two_txs(100, 1_000)));
+        select_first_block(&mut app);
+        app.on_key(press(KeyCode::Enter)); // block detail (Focus::Block)
+        assert_eq!(app.focus, Focus::Block);
+        // From the tx list, n opens the next tx into the detail preview.
+        app.on_key(press(KeyCode::Char('n')));
+        assert_eq!(app.block_tx_sel, 1);
         assert!(matches!(rx.try_recv(), Ok(Request::Transaction(_))));
     }
 
@@ -1355,7 +1516,10 @@ mod tests {
         app.on_key(press(KeyCode::Enter)); // block detail
         app.on_key(press(KeyCode::Enter)); // fetch the only tx
         assert!(matches!(rx.try_recv(), Ok(Request::Transaction(_))));
-        app.apply(Update::SearchTx(detail())); // drill opens
+        app.apply(Update::SearchTx {
+            detail: detail(),
+            height: 0,
+        }); // drill opens
         // Walking within a one-tx block stays put and sends nothing.
         app.on_key(press(KeyCode::Down));
         app.on_key(press(KeyCode::Char('n')));
@@ -1370,7 +1534,10 @@ mod tests {
         app.on_key(press(KeyCode::Enter));
         app.on_key(press(KeyCode::Enter));
         let _ = rx.try_recv();
-        app.apply(Update::SearchTx(detail()));
+        app.apply(Update::SearchTx {
+            detail: detail(),
+            height: 0,
+        });
         app.on_key(press(KeyCode::Char('n')));
         assert!(matches!(rx.try_recv(), Ok(Request::Transaction(_))));
     }
@@ -1411,7 +1578,7 @@ mod tests {
     #[test]
     fn a_disabled_gradient_never_advances_its_clock() {
         let (mut app, _rx) = app();
-        assert!(!app.dither_enabled);
+        assert!(app.dither.is_none());
         for _ in 0..5 {
             app.tick_dither();
         }
@@ -1421,7 +1588,7 @@ mod tests {
     #[test]
     fn the_field_clock_quantizes_to_the_repaint_step() {
         let (mut app, _rx) = app();
-        app.dither_enabled = true;
+        app.dither = Some(Charset::Blocks);
         // Two sub-step advances land in the same 90ms bucket: the frame is frozen.
         app.dither_secs = 0.04;
         let a = app.dither_time();
