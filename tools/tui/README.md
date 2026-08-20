@@ -2,7 +2,7 @@
 
 <img src="docs/assets/banner.png" alt="lwtui" width="520">
 
-A live terminal block explorer and mempool-monitor for Zcash lightwallet indexers.
+A live terminal block explorer and mempool monitor for Zcash lightwallet indexers.
 
 ## Usage
 
