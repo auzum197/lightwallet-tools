@@ -85,12 +85,13 @@ Bayer 8×8, threshold `(M[y%8][x%8] + 0.5) / 64`. Every cell's `bg` is the app
 ground, so the field blends into the pane; the `fg` hue is faded toward the
 ground by an opacity of `0.45`, so it reads as a faint material. Two charsets:
 
-- **Blocks** (`--experimental-dither`, default). Ramp `[' ','░','▒','▓','█']`,
-  glyph = `SHADES[floor(v·4 + bayer)]`. Near-universal, cell-aligned.
-- **Braille** (`--experimental-dither-braille`). 2×4 dots per cell, each on
-  when its subpixel value clears the Bayer threshold. Finer density. Font
-  support is a gamble (dots misalign or tofu), so it is opt-in and takes
-  precedence when both flags are passed.
+- **Braille** (`--experimental-dither-braille`, the preferred look). 2×4 dots
+  per cell, each on when its subpixel value clears the Bayer threshold, for a
+  finer field. Takes precedence when both flags are passed. Font support is a
+  gamble (dots misalign or tofu on some terminals), so it stays opt-in.
+- **Blocks** (`--experimental-dither`). Ramp `[' ','░','▒','▓','█']`, glyph =
+  `SHADES[floor(v·4 + bayer)]`. Near-universal and cell-aligned, the fallback
+  where braille glyphs don't render.
 
 ### Motion
 
