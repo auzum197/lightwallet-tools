@@ -9,8 +9,8 @@
 //!
 //! A mempool transaction's bytes carry its transparent outputs' values but not
 //! its inputs': an input names the funding output it spends. The tail follows
-//! those references so a row shows the transparent input total and an exact fee,
-//! not the omission ADR 0003 settled for. Resolution is eager (every
+//! those references so a row shows the transparent input total and an exact fee.
+//! Resolution is eager (every
 //! transparent-input tx as it streams) and identity-bearing (`GetTransaction`),
 //! so it rides a dedicated identity client, not the identity-free sync stream.
 //! Two shortcuts keep the burst survivable: a funding-txid cache, immutable so
@@ -90,6 +90,10 @@ fn guard<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+fn new_cache() -> FundingCache {
+    Arc::new(Mutex::new(HashMap::new()))
+}
+
 /// The tail reconnect loop. Returns when the UI drops the receiver.
 pub async fn run(url: String, variant: Variant, tx: UnboundedSender<Update>) {
     let endpoint = match endpoint(&url) {
@@ -112,10 +116,16 @@ pub async fn run(url: String, variant: Variant, tx: UnboundedSender<Update>) {
     // Carried across cycles: the tip height and hash last seen, so a fill knows
     // where the gap starts and whether the chain reorged under it.
     let mut last: Option<(u64, Vec<u8>)> = None;
+    // A clean stream end is a block boundary, not a lost connection. Reopening
+    // the stream then is routine, so don't flip the phase back to Connecting for
+    // it, or a fast chain reads as perpetual reconnecting. Only cold start and a
+    // real error announce Connecting.
+    let mut block_boundary = false;
     loop {
-        if tx.send(Update::Phase(Phase::Connecting)).is_err() {
+        if !block_boundary && tx.send(Update::Phase(Phase::Connecting)).is_err() {
             return;
         }
+        block_boundary = false;
         match cycle(
             &url,
             variant,
@@ -128,7 +138,10 @@ pub async fn run(url: String, variant: Variant, tx: UnboundedSender<Update>) {
         )
         .await
         {
-            Ok(Ended::Block) => backoff = BACKOFF_START,
+            Ok(Ended::Block) => {
+                backoff = BACKOFF_START;
+                block_boundary = true;
+            }
             Ok(Ended::Closed) => return,
             Err(e) => {
                 if tx.send(Update::Phase(Phase::Reconnecting(e))).is_err() {
@@ -316,8 +329,8 @@ pub async fn run_search(
         }
     };
     while let Some(req) = rx.recv().await {
-        let update = client.serve(req).await;
-        if tx.send(update).is_err() {
+        client.serve(req, &tx).await;
+        if tx.is_closed() {
             return;
         }
     }
@@ -664,11 +677,13 @@ enum SearchClient {
         ix: CanonicalIndexerClient<Channel>,
         id: CanonicalIdentityClient<Channel>,
         chain: ChainParams,
+        cache: FundingCache,
     },
     Crosslink {
         ix: CrosslinkIndexerClient<Channel>,
         id: CrosslinkIdentityClient<Channel>,
         chain: ChainParams,
+        cache: FundingCache,
     },
 }
 
@@ -685,7 +700,12 @@ impl SearchClient {
                 let ix = CanonicalIndexerClient::new(channel, empty_params());
                 let chain = chain_params(variant, ix.discover_params().await.ok().as_ref());
                 let id = CanonicalIdentityClient::new(IdentityTransport::connect_lazy(ep));
-                SearchClient::Canonical { ix, id, chain }
+                SearchClient::Canonical {
+                    ix,
+                    id,
+                    chain,
+                    cache: new_cache(),
+                }
             }
             Variant::Crosslink => {
                 let ix = CrosslinkIndexerClient::new(channel, empty_params());
@@ -694,6 +714,7 @@ impl SearchClient {
                     ix,
                     id,
                     chain: ChainParams::featurenet(),
+                    cache: new_cache(),
                 }
             }
         })
@@ -705,11 +726,21 @@ impl SearchClient {
         }
     }
 
-    async fn serve(&self, req: Request) -> Update {
+    fn cache(&self) -> &FundingCache {
+        match self {
+            SearchClient::Canonical { cache, .. } | SearchClient::Crosslink { cache, .. } => cache,
+        }
+    }
+
+    async fn serve(&self, req: Request, tx: &UnboundedSender<Update>) {
         match req {
-            Request::Block(height) => self.serve_block(height).await,
-            Request::Transaction(hex) => self.serve_tx(hex).await,
-            Request::Taddr { addr, start, end } => self.serve_taddr(addr, start, end).await,
+            Request::Block(height) => {
+                let _ = tx.send(self.serve_block(height).await);
+            }
+            Request::Transaction(hex) => self.serve_tx(hex, tx).await,
+            Request::Taddr { addr, start, end } => {
+                let _ = tx.send(self.serve_taddr(addr, start, end).await);
+            }
         }
     }
 
@@ -728,14 +759,17 @@ impl SearchClient {
         }
     }
 
-    async fn serve_tx(&self, display_hex: String) -> Update {
+    async fn serve_tx(&self, display_hex: String, tx: &UnboundedSender<Update>) {
         // Reverse display hex to internal byte order for TxFilter.hash.
         let Some(mut bytes) = hex::decode(&display_hex).ok().filter(|b| b.len() == 32) else {
-            return Update::SearchError(format!("No tx or block matched {display_hex}"));
+            let _ = tx.send(Update::SearchError(format!(
+                "No tx or block matched {display_hex}"
+            )));
+            return;
         };
         bytes.reverse();
-        let txid = lightwallet_core::Txid::new(bytes);
-        // Each variant returns its own RawTransaction type, so normalize to
+        let txid = Txid::new(bytes);
+        // Each variant returns its own RawTransaction type; normalize to
         // (data, height) inside the arm before leaving the match.
         let raw = match self {
             SearchClient::Canonical { id, .. } => {
@@ -745,31 +779,123 @@ impl SearchClient {
                 id.get_transaction(txid).await.map(|r| (r.data, r.height))
             }
         };
-        match raw {
-            Ok((data, height)) => {
-                // An unmined result (height 0) decodes under the tip's rules; the
-                // chain params yield the tip branch for a high height.
-                let h = if height == 0 {
-                    end_of_chain()
-                } else {
-                    height as u32
-                };
-                let mut parsed =
-                    lightwallet_txview::parse(&data, BlockHeight::from_u32(h), self.chain());
-                // A tx with transparent inputs can't be priced from its bytes;
-                // the mining block carries the server-computed fee, so fetch it
-                // and back the transparent input total out of it.
-                if matches!(parsed.input_total, InputTotal::Pending)
-                    && height > 0
-                    && let Some(fee) = self.mined_fee(height, parsed.txid.as_deref()).await
-                    && let Some(base) = parsed.fee_base
-                {
-                    parsed.resolve(Some(fee - base));
-                }
-                Update::SearchTx(TxDetail { parsed, raw: data })
-            }
-            Err(_) => Update::SearchError(format!("No tx or block matched {display_hex}")),
+        let Ok((data, height)) = raw else {
+            let _ = tx.send(Update::SearchError(format!(
+                "No tx or block matched {display_hex}"
+            )));
+            return;
+        };
+        // An unmined result (height 0) decodes under the tip's rules; the chain
+        // params yield the tip branch for a high height.
+        let h = if height == 0 {
+            end_of_chain()
+        } else {
+            height as u32
+        };
+        let parsed = lightwallet_txview::parse(&data, BlockHeight::from_u32(h), self.chain());
+        let pending = matches!(parsed.input_total, InputTotal::Pending);
+        let display_txid = parsed.txid.clone();
+        let prevouts = parsed.prevouts.clone();
+        let fee_base = parsed.fee_base;
+        // Open the pane at once; the transparent input total streams in behind it.
+        if tx
+            .send(Update::SearchTx {
+                detail: TxDetail { parsed, raw: data },
+                height,
+            })
+            .is_err()
+        {
+            return;
         }
+        // Only a mined tx with transparent inputs left pending needs resolving.
+        let (Some(txid), true) = (display_txid, pending) else {
+            return;
+        };
+        if prevouts.is_empty() {
+            return;
+        }
+        // Follow the funders: this yields each input's value (for the pane) and,
+        // when all read, the total. If a funder is unreadable, fall back to the
+        // mining block's server fee for the total alone.
+        let (mut total, values) = self
+            .resolve_inputs(&txid, &prevouts, BlockHeight::from_u32(h), tx)
+            .await;
+        if total.is_none()
+            && height > 0
+            && let Some(fee) = self.mined_fee(height, Some(&txid)).await
+            && let Some(base) = fee_base
+        {
+            total = Some(fee - base);
+        }
+        let _ = tx.send(Update::DrillResolved {
+            txid,
+            total,
+            values,
+        });
+    }
+
+    /// The raw bytes of a funding transaction, or `None` if the server can't
+    /// return it.
+    async fn funder_data(&self, txid: Txid) -> Option<Vec<u8>> {
+        match self {
+            SearchClient::Canonical { id, .. } => {
+                id.get_transaction(txid).await.ok().map(|r| r.data)
+            }
+            SearchClient::Crosslink { id, .. } => {
+                id.get_transaction(txid).await.ok().map(|r| r.data)
+            }
+        }
+    }
+
+    /// Follow each transparent input to the output it spends, returning its value
+    /// per input (in vin order) and their sum. Emits a probe per funder as it
+    /// goes. The total is `Some` only when every funder read; a single unreadable
+    /// funder leaves its value `None` and the total `None`. A definite answer
+    /// (read or genuinely absent) is cached; a transport miss is not.
+    async fn resolve_inputs(
+        &self,
+        spend_txid: &str,
+        prevouts: &[OutPoint],
+        height: BlockHeight,
+        tx: &UnboundedSender<Update>,
+    ) -> (Option<i64>, Vec<Option<i64>>) {
+        let chain = *self.chain();
+        let mut values = Vec::with_capacity(prevouts.len());
+        for op in prevouts {
+            let key = op.txid();
+            let idx = op.index as usize;
+            let _ = tx.send(Update::DrillProbe {
+                txid: spend_txid.to_string(),
+                funder: Some(key.clone()),
+            });
+            let value = if let Some(entry) = guard(self.cache()).get(&key) {
+                entry.as_ref().and_then(|vals| vals.get(idx).copied())
+            } else {
+                match self.funder_data(Txid::new(op.hash.to_vec())).await {
+                    None => None,
+                    Some(data) => {
+                        let vals = (!data.is_empty())
+                            .then(|| parse(&data, height, &chain))
+                            .filter(|p| p.error.is_none())
+                            .map(|p| p.vout_values);
+                        let value = vals.as_ref().and_then(|v| v.get(idx).copied());
+                        guard(self.cache()).insert(key.clone(), vals);
+                        value
+                    }
+                }
+            };
+            values.push(value);
+        }
+        let _ = tx.send(Update::DrillProbe {
+            txid: spend_txid.to_string(),
+            funder: None,
+        });
+        let total = values
+            .iter()
+            .copied()
+            .collect::<Option<Vec<i64>>>()
+            .map(|v| v.iter().sum());
+        (total, values)
     }
 
     /// The server-provided fee for a mined tx, read from its block's compact

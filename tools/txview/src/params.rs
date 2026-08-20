@@ -6,8 +6,7 @@
 //! Canonical chains reuse `zcash_protocol`'s built-in `Network` schedules,
 //! selected by the `chain_name` the server reports. The Crosslink featurenet has
 //! no upstream schedule crate, so [`FeatureNet`] hand-codes it: every upgrade
-//! through Nu6 is live from height 1, matching crosslink_monolith's season-2
-//! testnet activation heights.
+//! through Nu6 is live from height 1.
 
 use zcash_protocol::consensus::{BlockHeight, Network, NetworkType, NetworkUpgrade, Parameters};
 

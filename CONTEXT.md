@@ -189,3 +189,15 @@ against mocks and is never the question the gate answers. The gate asks
 whether the generic sync loop, run through the real network, completes at
 an acceptable rate (the bar milestone 3.6 set against real servers). Until
 a transport clears it, consumers get it as an experiment only.
+
+## Staking action
+
+A Crosslink v7 (VCrosslink) transaction's optional participation in the PoW
+chain's delegation-staking surface, one of seven kinds
+(create/withdraw/retarget a delegation bond, begin unbonding, register a
+finalizer, convert a finalizer reward, update a finalizer key). Public on the
+wire: it rides in the full transaction bytes and needs no keys to read, so the
+diagnostic viewers decode and display it. Observable only in the full-tx
+drill-down, never in compact streams. The Live monitor and Debug client render
+it through the shared txview parser; neither builds nor signs one. Bond and
+finalizer state lookups (roster, bond info) stay opaque bytes, out of scope.

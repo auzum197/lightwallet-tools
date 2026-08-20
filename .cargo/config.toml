@@ -1,0 +1,5 @@
+# Compile the whole workspace with the Crosslink staking surface visible. The
+# fork gates TxVersion::VCrosslink, StakingAction, and Transaction::staking_action
+# behind this cfg; txview reads staking actions, so the tools need it on.
+[build]
+rustflags = ["--cfg", 'zcash_unstable="crosslink"']
