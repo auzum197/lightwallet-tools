@@ -549,6 +549,7 @@ dependencies = [
 [[package]]
 name = "bft_primitives"
 version = "0.1.0"
+source = "git+https://github.com/auzum197/auzum-zcash?rev=f4f1f53af0958a21a6163a118652b4a23b7215fb#f4f1f53af0958a21a6163a118652b4a23b7215fb"
 dependencies = [
  "blake3",
  "corez",
@@ -8080,6 +8081,7 @@ dependencies = [
 [[package]]
 name = "zcash_primitives"
 version = "0.30.0"
+source = "git+https://github.com/auzum197/auzum-zcash?rev=f4f1f53af0958a21a6163a118652b4a23b7215fb#f4f1f53af0958a21a6163a118652b4a23b7215fb"
 dependencies = [
  "bft_primitives",
  "blake2b_simd",
@@ -8109,6 +8111,7 @@ dependencies = [
 [[package]]
 name = "zcash_protocol"
 version = "0.10.4"
+source = "git+https://github.com/auzum197/auzum-zcash?rev=f4f1f53af0958a21a6163a118652b4a23b7215fb#f4f1f53af0958a21a6163a118652b4a23b7215fb"
 dependencies = [
  "corez",
  "document-features",
