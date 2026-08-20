@@ -4,6 +4,19 @@
 
 A live terminal block explorer and mempool monitor for Zcash lightwallet indexers.
 
+## Installing
+
+```
+cargo install --git https://github.com/auzum197/lightwallet-tools lightwallet-tui
+```
+
+This drops the `lwtui` binary into `~/.cargo/bin`. Or build from a clone:
+
+```
+git clone https://github.com/auzum197/lightwallet-tools
+cargo install --path lightwallet-tools/tools/tui
+```
+
 ## Usage
 
 ```
