@@ -1,41 +1,47 @@
 # lightwallet-tui (`lwtui`)
 
-A live terminal monitor and read-only block explorer for Zcash lightwallet
-indexers. It holds one connection open and tails the chain: a mempool view that
-repopulates each block, a block-explorer tail with tx drill-down, and `/`
-search over heights, txids, and transparent addresses. The interactive sibling
-to `lwcli`, on the same `lightwallet-core` calls.
+A live terminal mempool monitor and read-only block explorer for Zcash lightwallet indexers.
+
+## Usage
 
 ```
 lwtui --url https://zec.rocks:443
-lwtui --url http://127.0.0.1:9067 --variant crosslink
-lwtui --url https://zec.rocks:443 --output ndjson        # machine-readable feed
-lwtui --url https://zec.rocks:443 --experimental-dither-braille
 ```
+
+Tab switches mempool ⇄ blocks; `/` searches heights, txids, and transparent
+addresses. `--output ndjson` swaps the UI for a machine-readable feed on stdout,
+one event per line with block-boundary markers.
+
+## Crosslink
+
+Point at a Crosslink indexer with `--variant crosslink`, and pass the
+featurenet's own block spacing so the health heuristic reads right:
+
+```
+lwtui --url http://127.0.0.1:9067 --variant crosslink --target-spacing 30
+```
+
+## Visual modes
+
+An animated dither gradient can back the idle tail of the focused pane. Prefer
+`--experimental-dither-braille` (finer 2×4 braille dots); fall back to
+`--experimental-dither` (universal shade blocks) where braille glyphs don't
+render. The braille flag wins when both are passed. Both need a truecolor
+terminal (`COLORTERM=truecolor`) and degrade to a flat pane under `NO_COLOR`.
+[DESIGN.md](DESIGN.md) covers the field math and color tokens.
 
 ## Keys
 
-Tab switches mempool ⇄ blocks. `j`/`k` (or `↑`/`↓`) move the selection; Enter
-opens a detail (a block, then a tx within it; a mempool tx directly), Esc or
-`←` steps back. In a focused tx view the arrows scroll and `n`/`N` walk between
-txs (a block's list or a search result set). `r` toggles raw ⇄ human, `y`/`Y`
-copy the tx JSON or raw hex, `/` searches, Space pauses live-follow, `?` shows
-the full key list, `q` quits.
-
-## Flags
-
-`--variant` picks canonical (default) or crosslink. `--target-spacing`
-overrides the health heuristic's reference block time (default suits canonical
-main/test; pass a featurenet's own spacing). `--output` is `tui` (default) or
-`ndjson`, a one-event-per-line feed on stdout with block-boundary markers, for
-piping.
-
-### Dither gradient
-
-An idle animation can back the empty tail of the focused pane. Prefer
-`--experimental-dither-braille` for the finer look (2×4 braille dots per cell);
-fall back to `--experimental-dither` (universal shade blocks) where a terminal
-can't render braille glyphs. The braille flag wins when both are passed. Both
-need a truecolor terminal (`COLORTERM=truecolor`) and degrade to a flat pane
-otherwise or under `NO_COLOR`. [DESIGN.md](DESIGN.md) covers the field math,
-color tokens, and motion.
+| key           | action                                        |
+|---------------|-----------------------------------------------|
+| `Tab`         | switch mempool ⇄ blocks                       |
+| `j` `k` `↑` `↓` | move selection (scroll a focused drill-down) |
+| `Enter` `→`   | open detail: a block, then a tx; a mempool tx |
+| `Esc` `←`     | step back; close the detail or results view   |
+| `n` `N`       | walk txs: a block's list or t-address results |
+| `r`           | drill-down: raw ⇄ human                        |
+| `y` `Y`       | copy tx JSON / raw hex to clipboard           |
+| `/`           | search: height, txid, or t-address            |
+| `Space`       | pause live-follow                             |
+| `?`           | toggle the help modal                         |
+| `q` `Ctrl-C`  | quit                                          |
