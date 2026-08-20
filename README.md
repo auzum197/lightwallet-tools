@@ -32,7 +32,7 @@ flowchart LR
 - [`lightwallet-transport-tor`](crates/transport-tor): tonic channels over Tor via arti, each channel its own circuit-isolation domain.
 - [`lightwallet-transport-nym`](crates/transport-nym): tonic channels through the Nym mixnet via a running `nym-socks5-client` (experimental).
 - [`lightwallet-cli`](tools/cli): `lwcli`, a one-shot point-at-anything debug client covering the full RPC surface.
-- [`lightwallet-tui`](tools/tui): `lwtui`, a live terminal monitor for indexers: mempool tail, block explorer, and tx drill-down. An animated dither gradient can back its idle panes: prefer `--experimental-dither-braille` (finer 2×4 dots), or `--experimental-dither` (universal shade blocks) where braille glyphs don't render. Both need a truecolor terminal; see [DESIGN.md](tools/tui/DESIGN.md).
+- [`lightwallet-tui`](tools/tui): `lwtui`, a live terminal monitor for indexers: mempool tail, block explorer, and tx drill-down.
 - [`lightwallet-txview`](tools/txview): shared transaction projection (`ParsedTx`) used by `lwcli` and `lwtui`.
 - [`lightwallet-test-support`](crates/test-support): in-memory mock endpoints with fault injection, plus a SOCKS5 test server.
 
