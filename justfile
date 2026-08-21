@@ -61,10 +61,10 @@ live-check:
 live-check-nym:
     cargo nextest run -p lightwallet-transport-nym --run-ignored ignored-only --no-capture
 
-# Both proto sets compile under protoc
+# Both proto sets compile under protox, the same compiler the build uses (the
+# proto crates' build.rs run it), so no protoc install is needed
 proto-check:
-    protoc -I proto/canonical/walletrpc --descriptor_set_out=/dev/null {{canonical_service}}
-    protoc -I proto/canonical/walletrpc -I proto/overlay --descriptor_set_out=/dev/null {{overlay}}
+    cargo check -p lightwallet-proto-canonical -p lightwallet-proto-crosslink --locked
     @echo "ok: canonical and overlay compile"
 
 # Overlay must be canonical service.proto + added lines only (no edits/deletions)

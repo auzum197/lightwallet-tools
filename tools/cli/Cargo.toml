@@ -40,3 +40,7 @@ tonic = { workspace = true, features = ["tls-ring", "tls-webpki-roots"] }
 [dev-dependencies]
 lightwallet-test-support = { path = "../../crates/test-support" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
+
+# Not shipped prebuilt yet: lwcli advances on its own schedule.
+[package.metadata.dist]
+dist = false

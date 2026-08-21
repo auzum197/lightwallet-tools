@@ -2996,7 +2996,7 @@ dependencies = [
 
 [[package]]
 name = "lightwallet-cli"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "arti-client",
@@ -3020,7 +3020,7 @@ dependencies = [
 
 [[package]]
 name = "lightwallet-core"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "futures-util",
  "lightwallet-proto-canonical",
@@ -3033,7 +3033,7 @@ dependencies = [
 
 [[package]]
 name = "lightwallet-ffi"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "futures-util",
  "hex",
@@ -3045,7 +3045,7 @@ dependencies = [
 
 [[package]]
 name = "lightwallet-proto-canonical"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "prost",
  "protox",
@@ -3056,7 +3056,7 @@ dependencies = [
 
 [[package]]
 name = "lightwallet-proto-crosslink"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "prost",
  "protox",
@@ -3067,7 +3067,7 @@ dependencies = [
 
 [[package]]
 name = "lightwallet-test-support"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "futures-util",
  "hyper-util",
@@ -3081,7 +3081,7 @@ dependencies = [
 
 [[package]]
 name = "lightwallet-transport-nym"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "futures-util",
  "hyper-util",
@@ -3096,7 +3096,7 @@ dependencies = [
 
 [[package]]
 name = "lightwallet-transport-tor"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "arti-client",
  "hyper-util",
@@ -3109,7 +3109,7 @@ dependencies = [
 
 [[package]]
 name = "lightwallet-tui"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -3127,7 +3127,7 @@ dependencies = [
 
 [[package]]
 name = "lightwallet-txview"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "hex",
  "orchard",

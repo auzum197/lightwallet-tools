@@ -3,10 +3,11 @@ resolver = "3"
 members = ["crates/*", "tools/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/auzum197/lightwallet-tools"
 
 [workspace.lints.rust]
 missing_docs = "deny"
@@ -14,6 +15,18 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(zcash_unstable, values("cr
 
 [profile.release]
 overflow-checks = true
+
+# The profile `dist` ships binaries with: release plus whole-program LTO and a
+# single codegen unit for speed and size, symbols stripped. Overflow checks stay
+# on (a wrong number is worse than a slow one) and panics keep unwinding so the
+# TUI can restore the terminal on the way out. No target-cpu: the binaries run
+# on any CPU of their architecture.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+strip = true
 
 # The Crosslink staking surface (TxVersion::VCrosslink, StakingAction) lives in
 # the auzum-zcash fork, behind zcash_unstable = "crosslink". The fork's
