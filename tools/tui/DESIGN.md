@@ -83,7 +83,8 @@ shade coverage says how bright.
 
 Bayer 8×8, threshold `(M[y%8][x%8] + 0.5) / 64`. Every cell's `bg` is the app
 ground, so the field blends into the pane; the `fg` hue is faded toward the
-ground by an opacity of `0.45`, so it reads as a faint material. Two charsets:
+ground so it reads as a faint material: opacity `0.45` for blocks, `0.65` for
+braille, whose dots cover less of the cell. Two charsets:
 
 - **Braille** (`--experimental-dither-braille`, the preferred look). 2×4 dots
   per cell, each on when its subpixel value clears the Bayer threshold, for a
