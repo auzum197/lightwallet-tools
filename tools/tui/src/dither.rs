@@ -45,6 +45,9 @@ const DOTS: [[u8; 2]; 4] = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x8
 /// Whole-field strength toward the ground. The gradient is a faint material
 /// under content, not a foreground: this reads as present but not competing.
 const OPACITY: f32 = 0.45;
+/// Braille dots cover far less of the cell than shade blocks, so the same alpha
+/// reads fainter. Lift it so the two charsets land at a similar weight.
+const BRAILLE_OPACITY: f32 = 0.65;
 
 /// Which glyph set the field dithers into.
 #[derive(Clone, Copy)]
@@ -156,7 +159,11 @@ pub fn render(buf: &mut Buffer, area: Rect, t: f32, charset: Charset, blank_only
         // Anchor the field to the bottom edge: full strength at the last row,
         // fading to the ground at the top, so the band dissolves up toward the
         // content instead of floating with a faded top edge.
-        let alpha = OPACITY * y;
+        let opacity = match charset {
+            Charset::Blocks => OPACITY,
+            Charset::Braille => BRAILLE_OPACITY,
+        };
+        let alpha = opacity * y;
         for cx in 0..w {
             let x = (cx as f32 + 0.5) / wf;
             let (v, weights) = field(x, y, t, &b);
