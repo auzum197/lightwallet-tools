@@ -326,7 +326,8 @@ fn render_body(f: &mut Frame, area: Rect, app: &App) {
 /// most room and its hexdump can widen. The tx pane is reserved even before a tx
 /// opens (a placeholder), so filling it never reflows the columns to its left. As
 /// width drops, shed the block list first (it's the index you navigated from),
-/// then collapse to a single pane.
+/// then collapse to a single pane that follows focus, so backing out of a tx
+/// lands on the block detail it came from rather than on an invisible pane.
 fn render_block_columns(f: &mut Frame, area: Rect, app: &App) {
     if area.width >= 120 {
         let [list, mid, right] = Layout::horizontal([
@@ -360,7 +361,7 @@ fn render_block_columns(f: &mut Frame, area: Rect, app: &App) {
         if app.focus != Focus::Drill {
             dim_area(f, right);
         }
-    } else if app.drill.is_some() {
+    } else if app.focus == Focus::Drill && app.drill.is_some() {
         render_drill(f, area, app);
     } else {
         render_block_detail(f, area, app);
@@ -717,7 +718,7 @@ fn render_drill(f: &mut Frame, area: Rect, app: &App) {
         human_lines(
             detail,
             theme::spinner(app.elapsed()),
-            app.drill_probe.as_deref(),
+            app.drill_probe,
             &app.drill_input_values,
         )
     };
@@ -765,7 +766,7 @@ fn indented(mut spans: Vec<Span<'static>>) -> Line<'static> {
 fn human_lines(
     detail: &crate::app::TxDetail,
     spin: char,
-    probe: Option<&str>,
+    probe: Option<(usize, usize)>,
     input_values: &[Option<i64>],
 ) -> Vec<Line<'static>> {
     let tx = &detail.parsed;
@@ -811,12 +812,12 @@ fn human_lines(
             Span::styled("t-inputs ", fg(theme::FAINT)),
             Span::styled(value, fg(theme::TEXT)),
         ]));
-        // While the total resolves, name the funding tx being fetched right now,
-        // so the wait reads as progress rather than a stuck spinner.
-        if let Some(funder) = probe.filter(|_| matches!(tx.input_total, InputTotal::Pending)) {
+        // While the total resolves, count the funders read so far, so the wait
+        // reads as progress rather than a stuck spinner.
+        if let Some((done, of)) = probe.filter(|_| matches!(tx.input_total, InputTotal::Pending)) {
             lines.push(indented(vec![
-                Span::styled("↳ reading ", fg(theme::FAINT)),
-                Span::styled(truncate_txid(funder), fg(theme::ACCENT_HI)),
+                Span::styled("↳ resolving inputs ", fg(theme::FAINT)),
+                Span::styled(format!("{done}/{of}"), fg(theme::ACCENT_HI)),
             ]));
         }
     }
@@ -1361,6 +1362,72 @@ mod tests {
         // At 130 cols all three columns show: the block list keeps its header.
         assert!(out.contains("height"), "the fixed list column survives");
         assert!(out.contains("transaction"), "the reserved tx pane shows");
+    }
+
+    #[test]
+    fn narrow_single_pane_follows_focus_back_to_the_block_detail() {
+        let mut app = app();
+        app.apply(Update::Phase(Phase::Live));
+        let mut b = block(100, now_unix() as u32);
+        b.tx_rows.push(crate::app::BlockTx {
+            txid: "a".repeat(64),
+            inputs: 1,
+            outputs: 1,
+        });
+        app.apply(Update::MinedBlock(b));
+        let enter = crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Enter);
+        app.on_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Char('j'),
+        ));
+        app.on_key(enter); // block detail
+        app.on_key(enter); // request the tx
+        use crate::app::TxDetail;
+        use lightwallet_txview::{InputTotal, ParsedTx, Value};
+        let parsed = ParsedTx {
+            txid: Some("a".repeat(64)),
+            version: Some("V5".into()),
+            size: 100,
+            consensus_branch_id: Some("nu6".into()),
+            lock_time: Some(0),
+            expiry_height: Some(0),
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            staking: None,
+            value: Value::Shielded,
+            vout_values: Vec::new(),
+            prevouts: Vec::new(),
+            input_total: InputTotal::None,
+            fee_base: None,
+            error: None,
+        };
+        app.apply(Update::SearchTx {
+            detail: TxDetail {
+                parsed,
+                raw: Vec::new(),
+            },
+            height: 100,
+        });
+        assert_eq!(app.focus, Focus::Drill);
+        let out = render_sized(&app, 70, 20);
+        assert!(
+            out.contains("transaction"),
+            "under 84 cols the tx pane shows"
+        );
+        assert!(!out.contains("┤ block ├"), "and the block detail does not");
+
+        app.on_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Esc,
+        ));
+        assert_eq!(app.focus, Focus::Block);
+        assert!(
+            app.drill.is_some(),
+            "the tx stays open behind the block pane"
+        );
+        let out = render_sized(&app, 70, 20);
+        assert!(
+            out.contains("block") && !out.contains("transaction"),
+            "back lands on the block detail, not an invisible pane:\n{out}"
+        );
     }
 
     #[test]

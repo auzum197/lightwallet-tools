@@ -45,8 +45,12 @@ pub enum Variant {
 /// An on-demand lookup from the search bar.
 pub enum Request {
     Block(u64),
-    /// A txid as display-order hex (no `0x`).
+    /// A txid as display-order hex (no `0x`). Supersedes any earlier
+    /// `Transaction` still resolving: its funder lookups are aborted.
     Transaction(String),
+    /// The drill closed, so whatever its tx was still resolving is wasted
+    /// work: abort it.
+    CloseTx,
     Taddr {
         addr: String,
         start: u64,
@@ -67,10 +71,17 @@ const REORG_DEPTH: u64 = 10;
 const BACKOFF_MAX: Duration = Duration::from_secs(10);
 const BACKOFF_START: Duration = Duration::from_millis(500);
 
-/// The most funding lookups in flight at once. Bounds the block-boundary burst,
-/// so a refill of transparent-input transactions queues behind this rather than
-/// opening a socket per input.
-const RESOLVE_CONCURRENCY: usize = 12;
+/// The most funding lookups in flight at once, across the mempool resolvers and
+/// the drill together. Bounds the block-boundary burst and a many-input drill
+/// alike: funders queue behind this rather than opening a stream per input.
+const RESOLVE_CONCURRENCY: usize = 16;
+
+/// The shared funding-lookup bound. One per process, handed to both tasks.
+pub type ResolveGate = Arc<Semaphore>;
+
+pub fn resolve_gate() -> ResolveGate {
+    Arc::new(Semaphore::new(RESOLVE_CONCURRENCY))
+}
 
 /// Funding txid (display order) to its transparent output values. `None` marks a
 /// funder we looked up and could not read, so a second input spending it does
@@ -95,7 +106,7 @@ fn new_cache() -> FundingCache {
 }
 
 /// The tail reconnect loop. Returns when the UI drops the receiver.
-pub async fn run(url: String, variant: Variant, tx: UnboundedSender<Update>) {
+pub async fn run(url: String, variant: Variant, gate: ResolveGate, tx: UnboundedSender<Update>) {
     let endpoint = match endpoint(&url) {
         Ok(endpoint) => endpoint,
         // A malformed url will not fix itself; report it and stop rather than
@@ -109,7 +120,7 @@ pub async fn run(url: String, variant: Variant, tx: UnboundedSender<Update>) {
     // unlinkability domain, and the cache and concurrency bound span reconnects.
     let id = Arc::new(build_identity(variant, endpoint));
     let cache: FundingCache = Arc::new(Mutex::new(HashMap::new()));
-    let sem = Arc::new(Semaphore::new(RESOLVE_CONCURRENCY));
+    let sem = gate;
     let mut next_seq: u64 = 0;
 
     let mut backoff = BACKOFF_START;
@@ -314,25 +325,55 @@ fn chain_params(variant: Variant, params: Option<&NetworkParams>) -> ChainParams
     }
 }
 
-/// The search task: build the clients once, then serve requests as they arrive.
+/// The search task: build the clients once, then serve each request on its own
+/// task, so a tx whose funders are still resolving never holds up the next
+/// lookup. At most one tx resolves at a time: a new `Transaction` (or `CloseTx`)
+/// aborts the one before it, since the pane it fed is gone.
 pub async fn run_search(
     url: String,
     variant: Variant,
+    gate: ResolveGate,
     mut rx: UnboundedReceiver<Request>,
     tx: UnboundedSender<Update>,
 ) {
-    let client = match SearchClient::connect(&url, variant).await {
-        Ok(c) => c,
+    let client = match SearchClient::connect(&url, variant, gate).await {
+        Ok(c) => Arc::new(c),
         Err(e) => {
             let _ = tx.send(Update::SearchError(format!("search unavailable: {e:#}")));
             return;
         }
     };
+    let mut tx_job: Option<tokio::task::JoinHandle<()>> = None;
     while let Some(req) = rx.recv().await {
-        client.serve(req, &tx).await;
-        if tx.is_closed() {
-            return;
+        let client = Arc::clone(&client);
+        let tx = tx.clone();
+        match req {
+            Request::Transaction(hex) => {
+                if let Some(job) =
+                    tx_job.replace(tokio::spawn(async move { client.serve_tx(hex, &tx).await }))
+                {
+                    job.abort();
+                }
+            }
+            Request::CloseTx => {
+                if let Some(job) = tx_job.take() {
+                    job.abort();
+                }
+            }
+            Request::Block(height) => {
+                tokio::spawn(async move {
+                    let _ = tx.send(client.serve_block(height).await);
+                });
+            }
+            Request::Taddr { addr, start, end } => {
+                tokio::spawn(async move {
+                    let _ = tx.send(client.serve_taddr(addr, start, end).await);
+                });
+            }
         }
+    }
+    if let Some(job) = tx_job {
+        job.abort();
     }
 }
 
@@ -355,26 +396,30 @@ fn spawn_resolve(
     let id = Arc::clone(id);
     let sem = Arc::clone(sem);
     tokio::spawn(async move {
-        // A closed semaphore only happens on shutdown; drop the job.
-        let Ok(_permit) = sem.acquire_owned().await else {
-            return;
-        };
-        let mut total: i64 = 0;
-        for op in &prevouts {
-            match funder_value(op, &in_stream, &cache, &id, &chain, height).await {
-                Some(value) => total += value,
-                // One prevout we cannot read makes the whole total (and the fee)
-                // unresolvable. Report that, never a wrong partial sum.
-                None => {
-                    let _ = tx.send(Update::ValueResolved { seq, total: None });
-                    return;
+        // Each funder takes its own permit, so the gate bounds lookups rather
+        // than transactions: one wide tx can't hog it, and many narrow ones
+        // still fan out. Outpoints move into the closure: a borrowed param would
+        // pin the async block to a late-bound lifetime the spawned task can't carry.
+        let values = futures_util::stream::iter(prevouts)
+            .map(|op| {
+                let sem = &sem;
+                let in_stream = &in_stream;
+                let cache = &cache;
+                let id = &id;
+                let chain = &chain;
+                async move {
+                    // A closed semaphore only happens on shutdown; drop the job.
+                    let _permit = sem.acquire().await.ok()?;
+                    funder_value(&op, in_stream, cache, id, chain, height).await
                 }
-            }
-        }
-        let _ = tx.send(Update::ValueResolved {
-            seq,
-            total: Some(total),
-        });
+            })
+            .buffer_unordered(RESOLVE_CONCURRENCY)
+            // One prevout we cannot read makes the whole total (and the fee)
+            // unresolvable. Report that, never a wrong partial sum.
+            .collect::<Vec<Option<i64>>>()
+            .await;
+        let total = values.into_iter().sum::<Option<i64>>();
+        let _ = tx.send(Update::ValueResolved { seq, total });
     });
 }
 
@@ -678,17 +723,19 @@ enum SearchClient {
         id: CanonicalIdentityClient<Channel>,
         chain: ChainParams,
         cache: FundingCache,
+        gate: ResolveGate,
     },
     Crosslink {
         ix: CrosslinkIndexerClient<Channel>,
         id: CrosslinkIdentityClient<Channel>,
         chain: ChainParams,
         cache: FundingCache,
+        gate: ResolveGate,
     },
 }
 
 impl SearchClient {
-    async fn connect(url: &str, variant: Variant) -> Result<Self> {
+    async fn connect(url: &str, variant: Variant, gate: ResolveGate) -> Result<Self> {
         let ep = endpoint(url)?;
         let channel = ep
             .clone()
@@ -705,6 +752,7 @@ impl SearchClient {
                     id,
                     chain,
                     cache: new_cache(),
+                    gate,
                 }
             }
             Variant::Crosslink => {
@@ -715,6 +763,7 @@ impl SearchClient {
                     id,
                     chain: ChainParams::featurenet(),
                     cache: new_cache(),
+                    gate,
                 }
             }
         })
@@ -732,15 +781,9 @@ impl SearchClient {
         }
     }
 
-    async fn serve(&self, req: Request, tx: &UnboundedSender<Update>) {
-        match req {
-            Request::Block(height) => {
-                let _ = tx.send(self.serve_block(height).await);
-            }
-            Request::Transaction(hex) => self.serve_tx(hex, tx).await,
-            Request::Taddr { addr, start, end } => {
-                let _ = tx.send(self.serve_taddr(addr, start, end).await);
-            }
+    fn gate(&self) -> &Semaphore {
+        match self {
+            SearchClient::Canonical { gate, .. } | SearchClient::Crosslink { gate, .. } => gate,
         }
     }
 
@@ -848,8 +891,9 @@ impl SearchClient {
     }
 
     /// Follow each transparent input to the output it spends, returning its value
-    /// per input (in vin order) and their sum. Emits a probe per funder as it
-    /// goes. The total is `Some` only when every funder read; a single unreadable
+    /// per input (in vin order) and their sum. Funders are fetched concurrently
+    /// under the shared gate, and each completion reports progress as a probe.
+    /// The total is `Some` only when every funder read; a single unreadable
     /// funder leaves its value `None` and the total `None`. A definite answer
     /// (read or genuinely absent) is cached; a transport miss is not.
     async fn resolve_inputs(
@@ -860,42 +904,54 @@ impl SearchClient {
         tx: &UnboundedSender<Update>,
     ) -> (Option<i64>, Vec<Option<i64>>) {
         let chain = *self.chain();
-        let mut values = Vec::with_capacity(prevouts.len());
-        for op in prevouts {
-            let key = op.txid();
-            let idx = op.index as usize;
+        let of = prevouts.len();
+        let probe = |done: Option<usize>| {
             let _ = tx.send(Update::DrillProbe {
                 txid: spend_txid.to_string(),
-                funder: Some(key.clone()),
+                progress: done.map(|d| (d, of)),
             });
-            let value = if let Some(entry) = guard(self.cache()).get(&key) {
-                entry.as_ref().and_then(|vals| vals.get(idx).copied())
-            } else {
-                match self.funder_data(Txid::new(op.hash.to_vec())).await {
-                    None => None,
-                    Some(data) => {
-                        let vals = (!data.is_empty())
-                            .then(|| parse(&data, height, &chain))
-                            .filter(|p| p.error.is_none())
-                            .map(|p| p.vout_values);
-                        let value = vals.as_ref().and_then(|v| v.get(idx).copied());
-                        guard(self.cache()).insert(key.clone(), vals);
-                        value
-                    }
-                }
-            };
-            values.push(value);
+        };
+        probe(Some(0));
+        let mut values = vec![None; of];
+        let mut done = 0;
+        let mut fetched = futures_util::stream::iter(prevouts.iter().cloned().enumerate())
+            .map(|(i, op)| {
+                let chain = &chain;
+                async move { (i, self.funder_value(&op, height, chain).await) }
+            })
+            .buffer_unordered(RESOLVE_CONCURRENCY);
+        while let Some((i, value)) = fetched.next().await {
+            values[i] = value;
+            done += 1;
+            probe(Some(done));
         }
-        let _ = tx.send(Update::DrillProbe {
-            txid: spend_txid.to_string(),
-            funder: None,
-        });
-        let total = values
-            .iter()
-            .copied()
-            .collect::<Option<Vec<i64>>>()
-            .map(|v| v.iter().sum());
+        probe(None);
+        let total = values.iter().copied().sum::<Option<i64>>();
         (total, values)
+    }
+
+    /// One input's value: from the cache, else a gated `GetTransaction`.
+    async fn funder_value(
+        &self,
+        op: &OutPoint,
+        height: BlockHeight,
+        chain: &ChainParams,
+    ) -> Option<i64> {
+        let key = op.txid();
+        let idx = op.index as usize;
+        if let Some(entry) = guard(self.cache()).get(&key) {
+            return entry.as_ref().and_then(|vals| vals.get(idx).copied());
+        }
+        // A closed gate only happens on shutdown; report unreadable.
+        let _permit = self.gate().acquire().await.ok()?;
+        let data = self.funder_data(Txid::new(op.hash.to_vec())).await?;
+        let vals = (!data.is_empty())
+            .then(|| parse(&data, height, chain))
+            .filter(|p| p.error.is_none())
+            .map(|p| p.vout_values);
+        let value = vals.as_ref().and_then(|v| v.get(idx).copied());
+        guard(self.cache()).insert(key, vals);
+        value
     }
 
     /// The server-provided fee for a mined tx, read from its block's compact
