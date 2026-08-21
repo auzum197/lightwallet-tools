@@ -99,12 +99,18 @@ async fn main() -> Result<()> {
     };
 
     let (tx, rx) = mpsc::unbounded_channel();
-    let tail = tokio::spawn(net::run(args.url.clone(), variant, tx.clone()));
+    let gate = net::resolve_gate();
+    let tail = tokio::spawn(net::run(
+        args.url.clone(),
+        variant,
+        gate.clone(),
+        tx.clone(),
+    ));
 
     let outcome = match args.output {
         OutputMode::Tui => {
             let (req_tx, req_rx) = mpsc::unbounded_channel();
-            let search = tokio::spawn(net::run_search(args.url, variant, req_rx, tx));
+            let search = tokio::spawn(net::run_search(args.url, variant, gate, req_rx, tx));
             let state = App::new(req_tx, target, dither);
             let mut terminal = ratatui::init();
             let r = run(&mut terminal, rx, state).await;

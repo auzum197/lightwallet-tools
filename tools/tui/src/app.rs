@@ -153,12 +153,12 @@ pub enum Update {
         detail: TxDetail,
         height: u64,
     },
-    /// Progress while the open drill's transparent inputs resolve: the funding
-    /// tx being fetched (display order), or `None` once that step ends. Guarded
-    /// by `txid` so a late probe for a closed or replaced drill is dropped.
+    /// Progress while the open drill's transparent inputs resolve: funders read
+    /// so far out of the total, or `None` once that step ends. Guarded by
+    /// `txid` so a late probe for a closed or replaced drill is dropped.
     DrillProbe {
         txid: String,
-        funder: Option<String>,
+        progress: Option<(usize, usize)>,
     },
     /// The resolved transparent input total for the open drill, backing out its
     /// fee. `Some` when every funder read, `None` when one could not (the fee
@@ -220,7 +220,7 @@ pub struct App {
     pub drill_origin: DrillOrigin,
     /// While the open drill's transparent inputs resolve, the funding txid
     /// currently being fetched (display order). Cleared when resolution ends.
-    pub drill_probe: Option<String>,
+    pub drill_probe: Option<(usize, usize)>,
     /// Per-input resolved value (zats) in vin order, once the drill's funders are
     /// read. `None` at an index whose funder could not be read. Empty until then.
     pub drill_input_values: Vec<Option<i64>>,
@@ -424,9 +424,9 @@ impl App {
                     }
                 }
             }
-            Update::DrillProbe { txid, funder } => {
+            Update::DrillProbe { txid, progress } => {
                 if self.drill_txid() == Some(txid.as_str()) {
-                    self.drill_probe = funder;
+                    self.drill_probe = progress;
                 }
             }
             Update::DrillResolved {
@@ -553,6 +553,14 @@ impl App {
         }
         self.focus = Focus::Drill;
         self.footer_msg = None;
+    }
+
+    /// Drop the open tx and tell the search task to stop resolving it.
+    fn close_drill(&mut self) {
+        self.drill = None;
+        self.drill_probe = None;
+        self.drill_input_values = Vec::new();
+        let _ = self.req.send(Request::CloseTx);
     }
 
     /// A clipboard payload queued by a copy key, taken by the render loop to
@@ -692,9 +700,7 @@ impl App {
                 // Leaving the block context drops the tx kept in the pane, so it
                 // never leaks onto the plain list.
                 self.block_detail = None;
-                self.drill = None;
-                self.drill_probe = None;
-                self.drill_input_values = Vec::new();
+                self.close_drill();
                 self.awaiting_tx = false;
                 self.focus = Focus::List;
             }
@@ -773,9 +779,7 @@ impl App {
                 if self.drill_origin == DrillOrigin::Block && self.block_detail.is_some() {
                     self.focus = Focus::Block;
                 } else {
-                    self.drill = None;
-                    self.drill_probe = None;
-                    self.drill_input_values = Vec::new();
+                    self.close_drill();
                     self.focus = Focus::List;
                 }
             }
@@ -1176,18 +1180,18 @@ mod tests {
             raw: Vec::new(),
         });
 
-        // A probe for the open tx names the funder being read.
+        // A probe for the open tx reports how many funders have read.
         app.apply(Update::DrillProbe {
             txid: "a".repeat(64),
-            funder: Some("f".repeat(64)),
+            progress: Some((0, 1)),
         });
-        assert_eq!(app.drill_probe.as_deref(), Some("f".repeat(64).as_str()));
+        assert_eq!(app.drill_probe, Some((0, 1)));
         // A probe for a different tx is dropped, leaving the current one.
         app.apply(Update::DrillProbe {
             txid: "b".repeat(64),
-            funder: Some("c".repeat(64)),
+            progress: Some((3, 4)),
         });
-        assert_eq!(app.drill_probe.as_deref(), Some("f".repeat(64).as_str()));
+        assert_eq!(app.drill_probe, Some((0, 1)));
 
         // Resolution for the open tx lands and clears the probe.
         app.apply(Update::DrillResolved {
@@ -1414,6 +1418,20 @@ mod tests {
         assert_eq!(app.drill_origin, DrillOrigin::Block);
         assert_eq!(app.view, View::Blocks);
         assert_eq!(app.focus, Focus::Drill, "the tx stays open");
+    }
+
+    #[test]
+    fn closing_the_drill_tells_the_search_task_to_stop_resolving() {
+        let (mut app, mut rx) = app();
+        app.awaiting_tx = true;
+        app.apply(Update::SearchTx {
+            detail: detail(),
+            height: 0,
+        });
+        assert_eq!(app.focus, Focus::Drill);
+        app.on_key(press(KeyCode::Esc));
+        assert!(app.drill.is_none());
+        assert!(matches!(rx.try_recv(), Ok(Request::CloseTx)));
     }
 
     #[test]

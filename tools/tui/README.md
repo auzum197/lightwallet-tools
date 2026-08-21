@@ -6,15 +6,25 @@ A live terminal block explorer and mempool monitor for Zcash lightwallet indexer
 
 ## Installing
 
+Prebuilt binaries for Linux and macOS (x86_64 and arm64) ship on the
+[releases page](https://github.com/auzum197/lightwallet-tools/releases). The
+installer puts `lwtui` into `~/.cargo/bin`:
+
+```
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/auzum197/lightwallet-tools/releases/latest/download/lightwallet-tui-installer.sh | sh
+```
+
+With [`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall), which
+fetches the same prebuilt binary instead of compiling:
+
+```
+cargo binstall --git https://github.com/auzum197/lightwallet-tools lightwallet-tui
+```
+
+Or build from source (a Rust toolchain, a few minutes):
+
 ```
 cargo install --git https://github.com/auzum197/lightwallet-tools lightwallet-tui
-```
-
-This drops the `lwtui` binary into `~/.cargo/bin`. Or build from a clone:
-
-```
-git clone https://github.com/auzum197/lightwallet-tools
-cargo install --path lightwallet-tools/tools/tui
 ```
 
 ## Usage
