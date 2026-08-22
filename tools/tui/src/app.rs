@@ -448,8 +448,11 @@ impl App {
                     self.attach_ctx_block(block);
                 } else {
                     let height = block.height;
+                    self.block_detail = Some(block.clone());
+                    self.block_tx_sel = 0;
                     self.insert_block(block);
                     self.view = View::Blocks;
+                    self.focus = Focus::Block;
                     self.selected_block_seq = self
                         .blocks
                         .iter()
@@ -1418,6 +1421,19 @@ mod tests {
         assert_eq!(app.drill_origin, DrillOrigin::Block);
         assert_eq!(app.view, View::Blocks);
         assert_eq!(app.focus, Focus::Drill, "the tx stays open");
+    }
+
+    #[test]
+    fn a_block_search_older_than_the_live_window_still_opens() {
+        let (mut app, _rx) = app();
+        for h in 1_000..1_000 + MAX_BLOCKS as u64 {
+            app.apply(Update::MinedBlock(block(h, h as u32)));
+        }
+        app.apply(Update::SearchBlock(block(500, 1_000)));
+        assert_eq!(app.block_detail.as_ref().map(|b| b.height), Some(500));
+        assert_eq!(app.focus, Focus::Block);
+        assert_eq!(app.view, View::Blocks);
+        assert!(app.footer_msg.is_none());
     }
 
     #[test]
