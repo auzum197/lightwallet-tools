@@ -11,7 +11,7 @@ use ratatui::widgets::{
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::app::{App, BlockRow, DrillOrigin, Focus, Phase, Row, TaddrHit, View};
+use crate::app::{App, BlockRow, Focus, Phase, ResolveProgress, Row, TaddrHit, TxOrigin, View};
 use crate::dither;
 use crate::health::Health;
 use crate::theme::{self, color};
@@ -47,14 +47,14 @@ pub fn draw(f: &mut Frame, app: &App) {
 }
 
 /// The column range the gradient may fill: the focused tx list (mempool) or the
-/// focused tx view (an open drill), else nothing. Mirrors the body layout so the
+/// focused tx view (an open tx detail), else nothing. Mirrors the body layout so the
 /// band lines up with the pane that holds focus.
 fn focused_pane(body: Rect, app: &App) -> Option<Rect> {
     let block_ctx = app.block_detail.is_some()
         && (app.focus == Focus::Block
-            || (app.drill.is_some() && app.drill_origin == DrillOrigin::Block));
+            || (app.tx_detail.is_some() && app.detail_origin == TxOrigin::Block));
     match app.focus {
-        Focus::Drill if block_ctx && body.width >= 120 => {
+        Focus::Tx if block_ctx && body.width >= 120 => {
             let [_, _, right] = Layout::horizontal([
                 Constraint::Length(36),
                 Constraint::Fill(3),
@@ -63,13 +63,13 @@ fn focused_pane(body: Rect, app: &App) -> Option<Rect> {
             .areas(body);
             Some(right)
         }
-        Focus::Drill if block_ctx && body.width >= 84 => {
+        Focus::Tx if block_ctx && body.width >= 84 => {
             let [_, right] =
                 Layout::horizontal([Constraint::Fill(3), Constraint::Fill(4)]).areas(body);
             Some(right)
         }
-        Focus::Drill if block_ctx => Some(body),
-        Focus::Drill => {
+        Focus::Tx if block_ctx => Some(body),
+        Focus::Tx => {
             let [_, detail] =
                 Layout::horizontal([Constraint::Min(0), Constraint::Length(DETAIL_RIGHT)])
                     .areas(body);
@@ -146,7 +146,7 @@ fn dim_area(f: &mut Frame, area: Rect) {
 
 fn fade(c: Color, reset_to: Option<theme::Rgb>) -> Color {
     let rgb = match c {
-        Color::Rgb(r, g, b) => (r, g, b),
+        Color::Rgb(r, g, b) => theme::rgb(r, g, b),
         Color::Reset => match reset_to {
             Some(rgb) => rgb,
             None => return c,
@@ -175,7 +175,7 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
         Some(mut crumb) => spans.append(&mut crumb),
         None => spans.append(&mut status_line(app)),
     }
-    if app.focus == Focus::Drill {
+    if app.focus == Focus::Tx {
         let mode = if app.raw_mode { "raw" } else { "human" };
         spans.push(Span::styled(
             format!("  ·  mode {mode}"),
@@ -253,11 +253,11 @@ fn since_block(app: &App) -> String {
     format!("{}s since block", now_unix().saturating_sub(mined as u64))
 }
 
-/// The drill path, shown once a block or tx is in context: `blocks › #height ›
+/// The detail path, shown once a block or tx is in context: `blocks › #height ›
 /// tx id`, with the last segment (where you are) brightened. Returns `None` on
 /// the plain list, where the tip status reads in its place.
 fn breadcrumb(app: &App) -> Option<Vec<Span<'static>>> {
-    if app.block_detail.is_none() && app.drill.is_none() {
+    if app.block_detail.is_none() && app.tx_detail.is_none() {
         return None;
     }
     let mut labels = vec![
@@ -271,8 +271,8 @@ fn breadcrumb(app: &App) -> Option<Vec<Span<'static>>> {
     if let Some(block) = &app.block_detail {
         labels.push(format!("#{}", block.height));
     }
-    if let Some(drill) = &app.drill {
-        let id = drill
+    if let Some(detail) = &app.tx_detail {
+        let id = detail
             .parsed
             .txid
             .as_deref()
@@ -293,25 +293,25 @@ fn breadcrumb(app: &App) -> Option<Vec<Span<'static>>> {
 }
 
 /// Fixed width for the tx-detail pane in the two-column (mempool / results)
-/// drill. The block-context view uses equal thirds instead.
+/// layout. The block-context view uses equal thirds instead.
 const DETAIL_RIGHT: u16 = 52;
 
 fn render_body(f: &mut Frame, area: Rect, app: &App) {
     // A block is "in context" from the moment its detail opens until it closes,
-    // whether or not a tx is drilled. The tx column is reserved throughout, so
+    // whether or not a tx detail is open. The tx column is reserved throughout, so
     // opening or closing a tx fills or empties that column without moving the
     // block list or the block detail beside it.
     let block_ctx = app.block_detail.is_some()
         && (app.focus == Focus::Block
-            || (app.drill.is_some() && app.drill_origin == DrillOrigin::Block));
+            || (app.tx_detail.is_some() && app.detail_origin == TxOrigin::Block));
     if block_ctx {
         render_block_columns(f, area, app);
-    } else if app.drill.is_some() {
+    } else if app.tx_detail.is_some() {
         let [list, detail] =
             Layout::horizontal([Constraint::Min(0), Constraint::Length(DETAIL_RIGHT)]).areas(area);
         render_active_list(f, list, app);
-        render_drill(f, detail, app);
-        // The drill holds focus here; fade the list behind it.
+        render_tx_detail(f, detail, app);
+        // The tx detail holds focus here; fade the list behind it.
         dim_area(f, list);
     } else {
         render_active_list(f, area, app);
@@ -340,11 +340,11 @@ fn render_block_columns(f: &mut Frame, area: Rect, app: &App) {
         render_block_detail(f, mid, app);
         render_tx_pane(f, right, app);
         // Fade the two columns that don't hold focus. The tx pane counts as
-        // focused whenever a tx is open, mirroring the Drill focus.
+        // focused whenever a tx is open, mirroring the Tx focus.
         for (rect, focused) in [
             (list, app.focus == Focus::List),
             (mid, app.focus == Focus::Block),
-            (right, app.focus == Focus::Drill),
+            (right, app.focus == Focus::Tx),
         ] {
             if !focused {
                 dim_area(f, rect);
@@ -358,17 +358,17 @@ fn render_block_columns(f: &mut Frame, area: Rect, app: &App) {
         if app.focus != Focus::Block {
             dim_area(f, mid);
         }
-        if app.focus != Focus::Drill {
+        if app.focus != Focus::Tx {
             dim_area(f, right);
         }
-    } else if app.focus == Focus::Drill && app.drill.is_some() {
-        render_drill(f, area, app);
+    } else if app.focus == Focus::Tx && app.tx_detail.is_some() {
+        render_tx_detail(f, area, app);
     } else {
         render_block_detail(f, area, app);
     }
 }
 
-/// The rightmost column: the drilled tx, or a reserved placeholder that holds
+/// The rightmost column: the open tx, or a reserved placeholder that holds
 /// A column's left divider in the structural slate, titled. The border reads as
 /// a seam between panes, not a frame competing with the content.
 fn left_pane(title: &'static str) -> Block<'static> {
@@ -381,8 +381,8 @@ fn left_pane(title: &'static str) -> Block<'static> {
 
 /// the column's width so opening a tx doesn't shift the layout.
 fn render_tx_pane(f: &mut Frame, area: Rect, app: &App) {
-    if app.drill.is_some() {
-        render_drill(f, area, app);
+    if app.tx_detail.is_some() {
+        render_tx_detail(f, area, app);
         return;
     }
     let outer = left_pane("transaction");
@@ -703,8 +703,8 @@ fn value_span(value: &Value, text: String) -> Span<'static> {
     Span::styled(text, Style::default().fg(color(rgb)))
 }
 
-fn render_drill(f: &mut Frame, area: Rect, app: &App) {
-    let Some(detail) = &app.drill else {
+fn render_tx_detail(f: &mut Frame, area: Rect, app: &App) {
+    let Some(detail) = &app.tx_detail else {
         return;
     };
     let parsed = &detail.parsed;
@@ -718,8 +718,8 @@ fn render_drill(f: &mut Frame, area: Rect, app: &App) {
         human_lines(
             detail,
             theme::spinner(app.elapsed()),
-            app.drill_probe,
-            &app.drill_input_values,
+            app.resolve_progress,
+            &app.detail_input_values,
         )
     };
     // Clamp the scroll to the content so the last line can reach the top edge
@@ -729,7 +729,7 @@ fn render_drill(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(
         Paragraph::new(lines)
             .block(block)
-            .scroll((app.drill_scroll.min(max), 0))
+            .scroll((app.detail_scroll.min(max), 0))
             .style(Style::default().fg(color(theme::TEXT))),
         area,
     );
@@ -766,7 +766,7 @@ fn indented(mut spans: Vec<Span<'static>>) -> Line<'static> {
 fn human_lines(
     detail: &crate::app::TxDetail,
     spin: char,
-    probe: Option<(usize, usize)>,
+    progress: Option<ResolveProgress>,
     input_values: &[Option<i64>],
 ) -> Vec<Line<'static>> {
     let tx = &detail.parsed;
@@ -814,7 +814,9 @@ fn human_lines(
         ]));
         // While the total resolves, count the funders read so far, so the wait
         // reads as progress rather than a stuck spinner.
-        if let Some((done, of)) = probe.filter(|_| matches!(tx.input_total, InputTotal::Pending)) {
+        if let Some(ResolveProgress { done, of }) =
+            progress.filter(|_| matches!(tx.input_total, InputTotal::Pending))
+        {
             lines.push(indented(vec![
                 Span::styled("↳ resolving inputs ", fg(theme::FAINT)),
                 Span::styled(format!("{done}/{of}"), fg(theme::ACCENT_HI)),
@@ -848,7 +850,7 @@ fn human_lines(
         lines.extend(output_detail(po));
     }
     // A V7 staking action only rides in the full-tx bytes, so it renders here in
-    // the drill-down and nowhere in the list. The section shows only when the tx
+    // the tx detail and nowhere in the list. The section shows only when the tx
     // carries one; the bytes of every blob are already in the raw hexdump.
     if let Some(staking) = tx.staking.as_deref() {
         lines.push(Line::from(""));
@@ -1085,7 +1087,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
     let keys = match app.focus {
-        Focus::Drill => "r raw⇄human · j/k scroll · n/N next · y/Y copy json/raw · esc close",
+        Focus::Tx => "r raw⇄human · j/k scroll · n/N next · y/Y copy json/raw · esc close",
         Focus::Block => "j/k select · n/N walk tx · enter open · y copy txid · esc close",
         _ => {
             "tab view · / search · enter detail · y/Y copy json/raw · space pause · ? help · q quit"
@@ -1119,11 +1121,11 @@ fn render_help(f: &mut Frame, area: Rect) {
         ("/", "search: height, txid, or t-address"),
         (
             "j / k  ·  ↑ / ↓",
-            "move selection (scroll a focused drill-down)",
+            "move selection (scroll a focused tx detail)",
         ),
         ("Enter", "open detail: a block, then a tx; a mempool tx"),
         ("Esc", "close the detail or results view"),
-        ("r", "drill-down: raw ⇄ human"),
+        ("r", "tx detail: raw ⇄ human"),
         ("y / Y", "copy tx JSON / raw hex to clipboard"),
         ("n / N", "walk txs: block list or t-address results"),
         ("Space", "pause live-follow"),
@@ -1193,7 +1195,7 @@ fn truncate_txid(txid: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{App, BlockRow, Update};
+    use crate::app::{App, BlockRow, ChainHeights, Update};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use tokio::sync::mpsc;
@@ -1288,7 +1290,7 @@ mod tests {
     }
 
     #[test]
-    fn staking_action_renders_in_drill_down() {
+    fn staking_action_renders_in_tx_detail() {
         use crate::app::TxDetail;
         use lightwallet_txview::{Blob, InputTotal, ParsedTx, Staking, StakingKind, Value};
 
@@ -1407,7 +1409,7 @@ mod tests {
             },
             height: 100,
         });
-        assert_eq!(app.focus, Focus::Drill);
+        assert_eq!(app.focus, Focus::Tx);
         let out = render_sized(&app, 70, 20);
         assert!(
             out.contains("transaction"),
@@ -1420,7 +1422,7 @@ mod tests {
         ));
         assert_eq!(app.focus, Focus::Block);
         assert!(
-            app.drill.is_some(),
+            app.tx_detail.is_some(),
             "the tx stays open behind the block pane"
         );
         let out = render_sized(&app, 70, 20);
@@ -1435,10 +1437,10 @@ mod tests {
         let mut app = app();
         app.apply(Update::Phase(Phase::Live));
         app.apply(Update::MinedBlock(block(100, now_unix() as u32)));
-        app.apply(Update::Info {
+        app.apply(Update::Info(ChainHeights {
             block_height: 100,
             estimated_height: 100,
-        });
+        }));
         let out = render(&app);
         assert!(out.contains("healthy"));
     }

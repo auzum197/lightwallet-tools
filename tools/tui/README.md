@@ -23,8 +23,8 @@ cargo install --path lightwallet-tools/tools/tui
 lwtui --url https://zec.rocks:443
 ```
 
-Watch the mempool fill and clear each block, browse the recent block tail, drill
-into any transaction, and look up a height, txid, or transparent address.
+Watch the mempool fill and clear each block, browse the recent block tail, open
+any transaction, and look up a height, txid, or transparent address.
 `--output ndjson` swaps the UI for a machine-readable feed on stdout.
 
 ## Crosslink support
@@ -50,11 +50,11 @@ terminal (`COLORTERM=truecolor`) and degrade to a flat pane under `NO_COLOR`.
 | key           | action                                        |
 |---------------|-----------------------------------------------|
 | `Tab`         | switch mempool ⇄ blocks                       |
-| `j` `k` `↑` `↓` | move selection (scroll a focused drill-down) |
+| `j` `k` `↑` `↓` | move selection (scroll a focused tx detail) |
 | `Enter` `→`   | open detail: a block, then a tx, or a mempool tx |
 | `Esc` `←`     | step back, or close the detail / results view |
 | `n` `N`       | walk txs: a block's list or t-address results |
-| `r`           | drill-down: raw ⇄ human                        |
+| `r`           | tx detail: raw ⇄ human                        |
 | `y` `Y`       | copy tx JSON / raw hex to clipboard           |
 | `/`           | search: height, txid, or t-address            |
 | `Space`       | pause live-follow                             |
