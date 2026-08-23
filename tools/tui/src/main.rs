@@ -1,7 +1,7 @@
 //! `lwtui`: a live terminal monitor and read-only block explorer for the Zcash
 //! lightwallet indexers. It holds one connection open and tails the chain: a
 //! mempool view that repopulates each block, and a block-explorer view with tx
-//! drill-down and `/` search. The interactive sibling to lwcli, built on the
+//! tx detail and `/` search. The interactive sibling to lwcli, built on the
 //! same `lightwallet-core` calls.
 
 mod app;

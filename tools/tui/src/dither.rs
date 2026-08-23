@@ -11,21 +11,23 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 
+use crate::theme::{self, Rgb};
+
 /// Shade ramp, empty to full. `floor(v*4 + bayer)` indexes it, so inter-cell
 /// dithering carries the levels between the five glyphs.
 const SHADES: [char; 5] = [' ', '░', '▒', '▓', '█'];
 
 /// The ground the region paints on every cell, so it never shows the terminal
 /// default through the gradient.
-const BG: (u8, u8, u8) = (0x18, 0x18, 0x18);
+const BG: Rgb = theme::rgb(0x18, 0x18, 0x18);
 /// The gradient body, already dimmed 40% toward `BG` at the palette level (the
 /// single brightness knob, held at its default). Used directly, as the HTML does.
-const TAN_FAINT: (u8, u8, u8) = (0x41, 0x36, 0x25);
-const SAND: (u8, u8, u8) = (0x8b, 0x6e, 0x52);
-const RUST: (u8, u8, u8) = (0x7b, 0x43, 0x31);
-const GRAD_OLIVE: (u8, u8, u8) = (0x67, 0x66, 0x38);
-const GREIGE: (u8, u8, u8) = (0x77, 0x6b, 0x58);
-const TEAL_DEEP: (u8, u8, u8) = (0x39, 0x55, 0x4e);
+const TAN_FAINT: Rgb = theme::rgb(0x41, 0x36, 0x25);
+const SAND: Rgb = theme::rgb(0x8b, 0x6e, 0x52);
+const RUST: Rgb = theme::rgb(0x7b, 0x43, 0x31);
+const GRAD_OLIVE: Rgb = theme::rgb(0x67, 0x66, 0x38);
+const GREIGE: Rgb = theme::rgb(0x77, 0x6b, 0x58);
+const TEAL_DEEP: Rgb = theme::rgb(0x39, 0x55, 0x4e);
 
 /// Standard 8x8 ordered-dither threshold matrix, values 0..63.
 const BAYER: [[u8; 8]; 8] = [
@@ -58,28 +60,57 @@ pub enum Charset {
     Braille,
 }
 
+/// A color in float space, so blends accumulate without rounding per step.
+#[derive(Clone, Copy)]
+struct Rgbf {
+    r: f32,
+    g: f32,
+    b: f32,
+}
+
+/// A point in the normalized field, both axes `0..=1`.
+#[derive(Clone, Copy)]
+struct Point {
+    x: f32,
+    y: f32,
+}
+
 /// The three blob centers at field time `t`, in normalized coords.
 struct Blobs {
-    b1: (f32, f32),
-    b2: (f32, f32),
-    b3: (f32, f32),
+    b1: Point,
+    b2: Point,
+    b3: Point,
+}
+
+/// The raw falloff weight of each blob at one point.
+#[derive(Clone, Copy)]
+struct Weights {
+    f1: f32,
+    f2: f32,
+    f3: f32,
+}
+
+/// The field at one point: its clamped value and the weights behind it.
+struct Sample {
+    value: f32,
+    weights: Weights,
 }
 
 /// Blob centers orbit on independent cosine/sine paths. Computed once per frame.
 fn blobs(t: f32) -> Blobs {
     Blobs {
-        b1: (
-            0.50 + 0.30 * (0.40 * t).cos(),
-            0.42 + 0.26 * (0.31 * t).sin(),
-        ),
-        b2: (
-            0.50 + 0.34 * (2.1 - 0.23 * t).cos(),
-            0.55 + 0.30 * (0.19 * t + 1.0).sin(),
-        ),
-        b3: (
-            0.50 + 0.26 * (0.17 * t + 4.2).cos(),
-            0.50 + 0.34 * (3.3 - 0.27 * t).sin(),
-        ),
+        b1: Point {
+            x: 0.50 + 0.30 * (0.40 * t).cos(),
+            y: 0.42 + 0.26 * (0.31 * t).sin(),
+        },
+        b2: Point {
+            x: 0.50 + 0.34 * (2.1 - 0.23 * t).cos(),
+            y: 0.55 + 0.30 * (0.19 * t + 1.0).sin(),
+        },
+        b3: Point {
+            x: 0.50 + 0.26 * (0.17 * t + 4.2).cos(),
+            y: 0.50 + 0.34 * (3.3 - 0.27 * t).sin(),
+        },
     }
 }
 
@@ -89,50 +120,56 @@ fn falloff(dx: f32, dy: f32) -> f32 {
     1.0 / (q * q)
 }
 
-fn mix(a: (f32, f32, f32), b: (u8, u8, u8), t: f32) -> (f32, f32, f32) {
-    (
-        a.0 + (b.0 as f32 - a.0) * t,
-        a.1 + (b.1 as f32 - a.1) * t,
-        a.2 + (b.2 as f32 - a.2) * t,
-    )
+fn mix(a: Rgbf, b: Rgb, t: f32) -> Rgbf {
+    mixf(a, cf(b), t)
 }
 
-fn cf(c: (u8, u8, u8)) -> (f32, f32, f32) {
-    (c.0 as f32, c.1 as f32, c.2 as f32)
+fn cf(c: Rgb) -> Rgbf {
+    Rgbf {
+        r: c.r as f32,
+        g: c.g as f32,
+        b: c.b as f32,
+    }
 }
 
-fn mixf(a: (f32, f32, f32), b: (f32, f32, f32), t: f32) -> (f32, f32, f32) {
-    (
-        a.0 + (b.0 - a.0) * t,
-        a.1 + (b.1 - a.1) * t,
-        a.2 + (b.2 - a.2) * t,
-    )
+fn mixf(a: Rgbf, b: Rgbf, t: f32) -> Rgbf {
+    Rgbf {
+        r: a.r + (b.r - a.r) * t,
+        g: a.g + (b.g - a.g) * t,
+        b: a.b + (b.b - a.b) * t,
+    }
 }
 
 /// The value field and the three raw falloff weights at one point.
-fn field(x: f32, y: f32, t: f32, b: &Blobs) -> (f32, (f32, f32, f32)) {
-    let f1 = 1.00 * falloff(x - b.b1.0, y - b.b1.1);
-    let f2 = 0.85 * falloff(x - b.b2.0, y - b.b2.1);
-    let f3 = 0.70 * falloff(x - b.b3.0, y - b.b3.1);
+fn field(x: f32, y: f32, t: f32, b: &Blobs) -> Sample {
+    let f1 = 1.00 * falloff(x - b.b1.x, y - b.b1.y);
+    let f2 = 0.85 * falloff(x - b.b2.x, y - b.b2.y);
+    let f3 = 0.70 * falloff(x - b.b3.x, y - b.b3.y);
     let mut v = f1 + f2 + f3;
     v *= 0.72 + 0.28 * (6.0 * x - 4.0 * y + 1.3 * t).sin();
-    ((v - 0.06).clamp(0.0, 1.0), (f1, f2, f3))
+    Sample {
+        value: (v - 0.06).clamp(0.0, 1.0),
+        weights: Weights { f1, f2, f3 },
+    }
 }
 
 /// The cell hue: blob colors weighted by the cubed falloffs, over a tan-faint
 /// floor, washed greige at the top and teal at the bottom. Cubing sharpens
 /// toward the nearest blob so sand/rust/olive stay saturated instead of
 /// averaging to one brown, while still blending smoothly across overlaps.
-fn hue_of(y: f32, (f1, f2, f3): (f32, f32, f32)) -> (f32, f32, f32) {
-    let (w1, w2, w3) = (f1 * f1 * f1, f2 * f2 * f2, f3 * f3 * f3);
+fn hue_of(y: f32, Weights { f1, f2, f3 }: Weights) -> Rgbf {
+    let w1 = f1 * f1 * f1;
+    let w2 = f2 * f2 * f2;
+    let w3 = f3 * f3 * f3;
     let wsum = w1 + w2 + w3;
     let hue = if wsum > 1e-9 {
         let inv = 1.0 / wsum;
-        (
-            (SAND.0 as f32 * w1 + RUST.0 as f32 * w2 + GRAD_OLIVE.0 as f32 * w3) * inv,
-            (SAND.1 as f32 * w1 + RUST.1 as f32 * w2 + GRAD_OLIVE.1 as f32 * w3) * inv,
-            (SAND.2 as f32 * w1 + RUST.2 as f32 * w2 + GRAD_OLIVE.2 as f32 * w3) * inv,
-        )
+        let channel = |s: u8, r: u8, o: u8| (s as f32 * w1 + r as f32 * w2 + o as f32 * w3) * inv;
+        Rgbf {
+            r: channel(SAND.r, RUST.r, GRAD_OLIVE.r),
+            g: channel(SAND.g, RUST.g, GRAD_OLIVE.g),
+            b: channel(SAND.b, RUST.b, GRAD_OLIVE.b),
+        }
     } else {
         cf(TAN_FAINT)
     };
@@ -166,7 +203,7 @@ pub fn render(buf: &mut Buffer, area: Rect, t: f32, charset: Charset, blank_only
         let alpha = opacity * y;
         for cx in 0..w {
             let x = (cx as f32 + 0.5) / wf;
-            let (v, weights) = field(x, y, t, &b);
+            let Sample { value: v, weights } = field(x, y, t, &b);
             let hue = hue_of(y, weights);
 
             let (fg, glyph) = match charset {
@@ -184,7 +221,7 @@ pub fn render(buf: &mut Buffer, area: Rect, t: f32, charset: Charset, blank_only
                         for sx in 0..2 {
                             let sxx = (cx as f32 + (sx as f32 + 0.5) / 2.0) / wf;
                             let syy = (cy as f32 + (sy as f32 + 0.5) / 4.0) / hf;
-                            let (sv, _) = field(sxx, syy, t, &b);
+                            let sv = field(sxx, syy, t, &b).value;
                             let thr = (BAYER[(cy as usize * 4 + sy) % 8][(cx as usize * 2 + sx) % 8]
                                 as f32
                                 + 0.5)
@@ -211,12 +248,9 @@ pub fn render(buf: &mut Buffer, area: Rect, t: f32, charset: Charset, blank_only
     }
 }
 
-fn to_color(c: (f32, f32, f32)) -> Color {
-    Color::Rgb(
-        c.0.round().clamp(0.0, 255.0) as u8,
-        c.1.round().clamp(0.0, 255.0) as u8,
-        c.2.round().clamp(0.0, 255.0) as u8,
-    )
+fn to_color(c: Rgbf) -> Color {
+    let byte = |v: f32| v.round().clamp(0.0, 255.0) as u8;
+    Color::Rgb(byte(c.r), byte(c.g), byte(c.b))
 }
 
 /// Whether the terminal advertises truecolor and color is not suppressed. The

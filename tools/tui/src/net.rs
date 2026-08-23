@@ -33,7 +33,10 @@ use tokio::sync::Semaphore;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 
-use crate::app::{BlockRow, BlockTx, Phase, Row, TaddrHit, TxDetail, Update};
+use crate::app::{
+    BlockRow, BlockTx, ChainHeights, Phase, ResolveProgress, ResolvedInputs, Row, TaddrHit,
+    TxDetail, Update,
+};
 
 /// Which protocol surface the endpoint serves.
 #[derive(Clone, Copy)]
@@ -48,7 +51,7 @@ pub enum Request {
     /// A txid as display-order hex (no `0x`). Supersedes any earlier
     /// `Transaction` still resolving: its funder lookups are aborted.
     Transaction(String),
-    /// The drill closed, so whatever its tx was still resolving is wasted
+    /// The tx detail closed, so whatever its tx was still resolving is wasted
     /// work: abort it.
     CloseTx,
     Taddr {
@@ -72,7 +75,7 @@ const BACKOFF_MAX: Duration = Duration::from_secs(10);
 const BACKOFF_START: Duration = Duration::from_millis(500);
 
 /// The most funding lookups in flight at once, across the mempool resolvers and
-/// the drill together. Bounds the block-boundary burst and a many-input drill
+/// the tx detail together. Bounds the block-boundary burst and a many-input tx
 /// alike: funders queue behind this rather than opening a stream per input.
 const RESOLVE_CONCURRENCY: usize = 16;
 
@@ -124,9 +127,9 @@ pub async fn run(url: String, variant: Variant, gate: ResolveGate, tx: Unbounded
     let mut next_seq: u64 = 0;
 
     let mut backoff = BACKOFF_START;
-    // Carried across cycles: the tip height and hash last seen, so a fill knows
-    // where the gap starts and whether the chain reorged under it.
-    let mut last: Option<(u64, Vec<u8>)> = None;
+    // Carried across cycles: the tip last seen, so a fill knows where the gap
+    // starts and whether the chain reorged under it.
+    let mut last: Option<BlockRef> = None;
     // A clean stream end is a block boundary, not a lost connection. Reopening
     // the stream then is routine, so don't flip the phase back to Connecting for
     // it, or a fast chain reads as perpetual reconnecting. Only cold start and a
@@ -178,7 +181,7 @@ async fn cycle(
     url: &str,
     variant: Variant,
     tx: &UnboundedSender<Update>,
-    last: &mut Option<(u64, Vec<u8>)>,
+    last: &mut Option<BlockRef>,
     id: &Arc<Id>,
     cache: &FundingCache,
     sem: &Arc<Semaphore>,
@@ -190,14 +193,17 @@ async fn cycle(
     let tip = ix.latest_height().await.unwrap_or(0);
 
     // Seed on cold start, gap-fill in steady state; either way `blocks` is the
-    // range to emit, oldest-first, and `new_head` its newest (height, hash).
-    let mut new_head: Option<(u64, Vec<u8>)> = None;
+    // range to emit, oldest-first, and `new_head` its newest.
+    let mut new_head: Option<BlockRef> = None;
     if tip > 0 {
         let blocks = fill_range(&ix, last, tip, tx)
             .await
             .map_err(|e| format!("{e:#}"))?;
         if let Some(b) = blocks.last() {
-            new_head = Some((b.height, b.hash.clone()));
+            new_head = Some(BlockRef {
+                height: b.height,
+                hash: b.hash.clone(),
+            });
         }
         for b in blocks {
             if tx.send(Update::MinedBlock(b)).is_err() {
@@ -211,12 +217,7 @@ async fn cycle(
 
     // Health: sample GetLightdInfo once per edge.
     if let Ok(info) = ix.lightd_info().await
-        && tx
-            .send(Update::Info {
-                block_height: info.0,
-                estimated_height: info.1,
-            })
-            .is_err()
+        && tx.send(Update::Info(info)).is_err()
     {
         return Ok(Ended::Closed);
     }
@@ -282,19 +283,28 @@ async fn cycle(
     Ok(Ended::Block)
 }
 
+/// A block by height and hash, enough to chain a later fill onto it.
+struct BlockRef {
+    height: u64,
+    hash: Vec<u8>,
+}
+
 /// Seed (cold) or gap-fill (steady) the block ring, capped to `MAX_BLOCKS`.
 /// Detects a reorg at the fill boundary and, on one, widens the refetch and
 /// emits `Update::Reorg` before returning the fresh blocks.
 async fn fill_range(
     ix: &Ix,
-    last: &Option<(u64, Vec<u8>)>,
+    last: &Option<BlockRef>,
     tip: u64,
     tx: &UnboundedSender<Update>,
 ) -> Result<Vec<BlockRow>> {
     let floor = tip.saturating_sub(MAX_BLOCKS - 1);
     match last {
         None => ix.block_range_pools(floor, tip).await,
-        Some((old, old_hash)) => {
+        Some(BlockRef {
+            height: old,
+            hash: old_hash,
+        }) => {
             if tip <= *old {
                 return Ok(Vec::new());
             }
@@ -634,17 +644,17 @@ impl Ix {
         }
     }
 
-    /// `(block_height, estimated_height)` from `GetLightdInfo`.
-    async fn lightd_info(&self) -> lightwallet_core::Result<(u64, u64)> {
+    /// The node's own and estimated chain heights from `GetLightdInfo`.
+    async fn lightd_info(&self) -> lightwallet_core::Result<ChainHeights> {
         match self {
-            Ix::Canonical(c) => c
-                .get_lightd_info()
-                .await
-                .map(|i| (i.block_height, i.estimated_height)),
-            Ix::Crosslink(c) => c
-                .get_lightd_info()
-                .await
-                .map(|i| (i.block_height, i.estimated_height)),
+            Ix::Canonical(c) => c.get_lightd_info().await.map(|i| ChainHeights {
+                block_height: i.block_height,
+                estimated_height: i.estimated_height,
+            }),
+            Ix::Crosslink(c) => c.get_lightd_info().await.map(|i| ChainHeights {
+                block_height: i.block_height,
+                estimated_height: i.estimated_height,
+            }),
         }
     }
 
@@ -860,7 +870,7 @@ impl SearchClient {
         // Follow the funders: this yields each input's value (for the pane) and,
         // when all read, the total. If a funder is unreadable, fall back to the
         // mining block's server fee for the total alone.
-        let (mut total, values) = self
+        let ResolvedInputs { mut total, values } = self
             .resolve_inputs(&txid, &prevouts, BlockHeight::from_u32(h), tx)
             .await;
         if total.is_none()
@@ -870,7 +880,7 @@ impl SearchClient {
         {
             total = Some(fee - base);
         }
-        let _ = tx.send(Update::DrillResolved {
+        let _ = tx.send(Update::DetailResolved {
             txid,
             total,
             values,
@@ -892,7 +902,7 @@ impl SearchClient {
 
     /// Follow each transparent input to the output it spends, returning its value
     /// per input (in vin order) and their sum. Funders are fetched concurrently
-    /// under the shared gate, and each completion reports progress as a probe.
+    /// under the shared gate, and each completion reports progress.
     /// The total is `Some` only when every funder read; a single unreadable
     /// funder leaves its value `None` and the total `None`. A definite answer
     /// (read or genuinely absent) is cached; a transport miss is not.
@@ -902,16 +912,16 @@ impl SearchClient {
         prevouts: &[OutPoint],
         height: BlockHeight,
         tx: &UnboundedSender<Update>,
-    ) -> (Option<i64>, Vec<Option<i64>>) {
+    ) -> ResolvedInputs {
         let chain = *self.chain();
         let of = prevouts.len();
-        let probe = |done: Option<usize>| {
-            let _ = tx.send(Update::DrillProbe {
+        let report = |done: Option<usize>| {
+            let _ = tx.send(Update::ResolveProgress {
                 txid: spend_txid.to_string(),
-                progress: done.map(|d| (d, of)),
+                progress: done.map(|done| ResolveProgress { done, of }),
             });
         };
-        probe(Some(0));
+        report(Some(0));
         let mut values = vec![None; of];
         let mut done = 0;
         let mut fetched = futures_util::stream::iter(prevouts.iter().cloned().enumerate())
@@ -923,11 +933,11 @@ impl SearchClient {
         while let Some((i, value)) = fetched.next().await {
             values[i] = value;
             done += 1;
-            probe(Some(done));
+            report(Some(done));
         }
-        probe(None);
+        report(None);
         let total = values.iter().copied().sum::<Option<i64>>();
-        (total, values)
+        ResolvedInputs { total, values }
     }
 
     /// One input's value: from the cache, else a gated `GetTransaction`.
@@ -983,7 +993,7 @@ impl SearchClient {
         };
         let hits = raws
             .into_iter()
-            .map(|(data, height)| {
+            .map(|RawTxAt { data, height }| {
                 let height = if height == 0 { end } else { height };
                 let parsed = lightwallet_txview::parse(
                     &data,
@@ -1010,11 +1020,17 @@ fn end_of_chain() -> u32 {
     u32::MAX / 2
 }
 
-/// Drain a t-address transaction stream into `(data, height)` pairs, stopping at
-/// the first error item.
+/// A raw transaction and the height it was mined at (0 when unmined).
+struct RawTxAt {
+    data: Vec<u8>,
+    height: u64,
+}
+
+/// Drain a t-address transaction stream into raw transactions, stopping at the
+/// first error item.
 async fn drain_taddr<S>(
     stream: lightwallet_core::Result<BoxStream<'static, lightwallet_core::Result<S>>>,
-) -> lightwallet_core::Result<Vec<(Vec<u8>, u64)>>
+) -> lightwallet_core::Result<Vec<RawTxAt>>
 where
     S: RawTx,
 {
@@ -1024,7 +1040,10 @@ where
         match item {
             Ok(r) => {
                 let height = r.height();
-                out.push((r.data(), height));
+                out.push(RawTxAt {
+                    data: r.data(),
+                    height,
+                });
             }
             Err(_) => break,
         }

@@ -39,7 +39,7 @@ its default and applied at the palette level, not at runtime.
 ## Dither gradient (`--experimental-dither[-braille]`)
 
 An idle animation in the empty tail of the focused pane — the tx list (mempool)
-or the tx view (an open drill), never any other pane. The band fills from just
+or the tx view (an open tx detail), never any other pane. The band fills from just
 below the pane's last content line down through the footer, and the field fades
 toward its top edge (full strength at the bottom row, `OPACITY·y`), so it
 anchors to the screen bottom and dissolves up toward the content — visibly

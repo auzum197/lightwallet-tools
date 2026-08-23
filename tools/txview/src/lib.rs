@@ -214,7 +214,7 @@ impl StakingKind {
         }
     }
 
-    /// The human title for the drill-down section header (`Create new delegation
+    /// The human title for the tx detail section header (`Create new delegation
     /// bond`). The one authoritative name list, so a pane can't drift from JSON.
     pub fn title(&self) -> &'static str {
         match self {
@@ -694,7 +694,13 @@ pub fn parse<P: Parameters>(data: &[u8], height: BlockHeight, params: &P) -> Par
     // Orchard and Ironwood share the action bundle type; the pool tag is the
     // only thing that differs on the way into the view.
     if let Some(o) = tx.orchard_bundle() {
-        let (anchor, vb, flags, spends, outputs) = read_actions(o);
+        let ActionBundle {
+            anchor,
+            value_balance: vb,
+            flags,
+            spends,
+            outputs,
+        } = read_actions(o);
         value_balance += vb;
         shielded_output = true;
         view.inputs.push(PoolInput::Orchard {
@@ -706,7 +712,13 @@ pub fn parse<P: Parameters>(data: &[u8], height: BlockHeight, params: &P) -> Par
         view.outputs.push(PoolOutput::Orchard { outputs });
     }
     if let Some(i) = tx.ironwood_bundle() {
-        let (anchor, vb, flags, spends, outputs) = read_actions(i);
+        let ActionBundle {
+            anchor,
+            value_balance: vb,
+            flags,
+            spends,
+            outputs,
+        } = read_actions(i);
         value_balance += vb;
         shielded_output = true;
         view.inputs.push(PoolInput::Ironwood {
@@ -842,12 +854,18 @@ fn project_staking(action: &StakingAction) -> Staking {
     }
 }
 
-/// Read the fields the view wants off an Orchard-shaped bundle (Orchard or
-/// Ironwood, same type). Returns anchor hex, value balance, flags, and the
-/// per-action spend and output halves.
-fn read_actions<A, V>(
-    bundle: &orchard::Bundle<A, V>,
-) -> (String, i64, Flags, Vec<ActionSpend>, Vec<ActionOutput>)
+/// The fields the view wants off an Orchard-shaped bundle (Orchard or Ironwood,
+/// same type): anchor hex, value balance, flags, and the per-action spend and
+/// output halves.
+struct ActionBundle {
+    anchor: String,
+    value_balance: i64,
+    flags: Flags,
+    spends: Vec<ActionSpend>,
+    outputs: Vec<ActionOutput>,
+}
+
+fn read_actions<A, V>(bundle: &orchard::Bundle<A, V>) -> ActionBundle
 where
     A: orchard::bundle::Authorization,
     V: Copy,
@@ -878,7 +896,13 @@ where
             },
         });
     }
-    (anchor, vb, flags, spends, outputs)
+    ActionBundle {
+        anchor,
+        value_balance: vb,
+        flags,
+        spends,
+        outputs,
+    }
 }
 
 #[cfg(test)]

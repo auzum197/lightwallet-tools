@@ -18,7 +18,7 @@ use lightwallet_txview::ParsedTx;
 use serde::Serialize;
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use crate::app::{Phase, Update};
+use crate::app::{ChainHeights, Phase, Update};
 
 /// One line of the feed. `type` discriminates; a consumer switches on it. The
 /// `tx` variant flattens the shared [`ParsedTx`] projection, so lwtui's feed and
@@ -108,10 +108,10 @@ pub async fn run(mut rx: UnboundedReceiver<Update>) -> Result<()> {
                 inputs: b.inputs,
                 outputs: b.outputs,
             },
-            Update::Info {
+            Update::Info(ChainHeights {
                 block_height,
                 estimated_height,
-            } => Event::Info {
+            }) => Event::Info {
                 block_height,
                 estimated_height,
             },
@@ -128,14 +128,14 @@ pub async fn run(mut rx: UnboundedReceiver<Update>) -> Result<()> {
                 state: "reconnecting",
                 detail: Some(err),
             },
-            // NDJSON issues no queries, so search results and the drill's
+            // NDJSON issues no queries, so search results and the tx detail's
             // input-resolution progress never reach here.
             Update::SearchTx { .. }
             | Update::SearchBlock(_)
             | Update::SearchTaddr { .. }
             | Update::SearchError(_)
-            | Update::DrillProbe { .. }
-            | Update::DrillResolved { .. } => continue,
+            | Update::ResolveProgress { .. }
+            | Update::DetailResolved { .. } => continue,
         };
         let line = serde_json::to_string(&event)?;
         if let Err(e) = writeln!(out, "{line}").and_then(|()| out.flush()) {

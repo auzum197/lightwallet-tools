@@ -81,6 +81,21 @@ client, sharing the same `lightwallet-core` calls, one-shot print replaced by
 an event loop. A diagnostic viewer for humans, not a wallet. Starts
 mempool-only and grows other live views later.
 
+## Transaction detail
+
+The Live monitor's reading of one transaction in full: its parsed fields
+beside the raw bytes, with transparent inputs resolved on open. Opened from a
+mempool row, a Block detail's tx list, or a search hit, and the origin decides
+where closing returns. Sibling to the Block detail, which shows one block and
+its tx list. In code and docs the short form is "tx detail". Formerly
+"drill-down" or "the drill", dropped because drilling names a motion, not the
+thing shown.
+
+## Block detail
+
+The Live monitor's reading of one block: header fields plus the selectable
+list of its transactions, from which a Transaction detail opens.
+
 ## Pending set
 
 The mempool contents relative to the current chain tip: the transactions the
@@ -197,7 +212,7 @@ chain's delegation-staking surface, one of seven kinds
 (create/withdraw/retarget a delegation bond, begin unbonding, register a
 finalizer, convert a finalizer reward, update a finalizer key). Public on the
 wire: it rides in the full transaction bytes and needs no keys to read, so the
-diagnostic viewers decode and display it. Observable only in the full-tx
-drill-down, never in compact streams. The Live monitor and Debug client render
+diagnostic viewers decode and display it. Observable only in the Transaction
+detail, never in compact streams. The Live monitor and Debug client render
 it through the shared txview parser; neither builds nor signs one. Bond and
 finalizer state lookups (roster, bond info) stay opaque bytes, out of scope.

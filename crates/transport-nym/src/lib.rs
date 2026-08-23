@@ -65,7 +65,7 @@ fn connector(
 > + Send
 + 'static {
     tower::service_fn(move |uri: Uri| async move {
-        let (host, port) = authority(&uri).map_err(std::io::Error::other)?;
+        let DialTarget { host, port } = dial_target(&uri).map_err(std::io::Error::other)?;
         let stream = Socks5Stream::connect(socks, (host.as_str(), port))
             .await
             .map_err(std::io::Error::other)?;
@@ -73,7 +73,15 @@ fn connector(
     })
 }
 
-fn authority(uri: &Uri) -> Result<(String, u16), String> {
+/// What the connector dials: the endpoint URI's host and its explicit or
+/// scheme-default port.
+#[derive(Debug, PartialEq, Eq)]
+struct DialTarget {
+    host: String,
+    port: u16,
+}
+
+fn dial_target(uri: &Uri) -> Result<DialTarget, String> {
     let host = uri
         .host()
         .ok_or_else(|| format!("no host in endpoint uri {uri}"))?;
@@ -85,48 +93,69 @@ fn authority(uri: &Uri) -> Result<(String, u16), String> {
             _ => None,
         })
         .ok_or_else(|| format!("no port in endpoint uri {uri} and no default for its scheme"))?;
-    Ok((host.to_string(), port))
+    Ok(DialTarget {
+        host: host.to_string(),
+        port,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn auth(uri: &str) -> Result<(String, u16), String> {
-        authority(&uri.parse().unwrap())
+    fn target(uri: &str) -> Result<DialTarget, String> {
+        dial_target(&uri.parse().unwrap())
     }
 
     #[test]
     fn explicit_port_wins() {
         assert_eq!(
-            auth("https://zec.rocks:9067").unwrap(),
-            ("zec.rocks".into(), 9067)
+            target("https://zec.rocks:9067").unwrap(),
+            DialTarget {
+                host: "zec.rocks".into(),
+                port: 9067
+            }
         );
     }
 
     #[test]
     fn scheme_supplies_the_default_port() {
         assert_eq!(
-            auth("https://zec.rocks").unwrap(),
-            ("zec.rocks".into(), 443)
+            target("https://zec.rocks").unwrap(),
+            DialTarget {
+                host: "zec.rocks".into(),
+                port: 443
+            }
         );
-        assert_eq!(auth("http://localhost").unwrap(), ("localhost".into(), 80));
+        assert_eq!(
+            target("http://localhost").unwrap(),
+            DialTarget {
+                host: "localhost".into(),
+                port: 80
+            }
+        );
     }
 
     #[test]
     fn portless_unknown_scheme_is_rejected() {
-        assert!(auth("unix://socket").is_err());
+        assert!(target("unix://socket").is_err());
     }
 
     #[test]
     fn uri_without_a_host_is_rejected() {
-        assert!(auth("/no/host").unwrap_err().contains("no host"));
+        assert!(target("/no/host").unwrap_err().contains("no host"));
     }
 
     #[test]
     fn ipv6_literal_host_keeps_its_brackets() {
         // The bracketed form fails tokio-socks' IpAddr parse downstream, so
         // it ships to the proxy as a domain address; tunnel.rs pins that.
-        assert_eq!(auth("https://[::1]:9067").unwrap(), ("[::1]".into(), 9067));
+        assert_eq!(
+            target("https://[::1]:9067").unwrap(),
+            DialTarget {
+                host: "[::1]".into(),
+                port: 9067
+            }
+        );
     }
 }

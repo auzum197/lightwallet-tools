@@ -150,7 +150,7 @@ macro_rules! impl_indexer_methods {
                 $crate::NetworkParams::from_lightd_info(&info)
             }
 
-            /// Testing-only latency probe. Requires the server's insecure ping flag.
+            /// Testing-only latency check. Requires the server's insecure ping flag.
             pub async fn ping(
                 &self,
                 interval_us: i64,
