@@ -10,6 +10,7 @@ mod health;
 mod ndjson;
 mod net;
 mod osc52;
+mod sphere;
 mod theme;
 mod ui;
 
