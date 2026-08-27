@@ -50,6 +50,9 @@ const OPACITY: f32 = 0.45;
 /// Braille dots cover far less of the cell than shade blocks, so the same alpha
 /// reads fainter. Lift it so the two charsets land at a similar weight.
 const BRAILLE_OPACITY: f32 = 0.65;
+/// Brighter cut for the about pane's sea: stronger alpha values.
+const BRIGHT_OPACITY: f32 = 0.85;
+const BRIGHT_BRAILLE_OPACITY: f32 = 1.0;
 
 /// Which glyph set the field dithers into.
 #[derive(Clone, Copy)]
@@ -183,6 +186,24 @@ fn hue_of(y: f32, Weights { f1, f2, f3 }: Weights) -> Rgbf {
 /// `blank_only`, cells already carrying content are left untouched, so the field
 /// fills empty space without painting over text.
 pub fn render(buf: &mut Buffer, area: Rect, t: f32, charset: Charset, blank_only: bool) {
+    let opacity = match charset {
+        Charset::Blocks => OPACITY,
+        Charset::Braille => BRAILLE_OPACITY,
+    };
+    paint(buf, area, t, charset, blank_only, opacity);
+}
+
+/// The brighter cut the about pane's sea uses: same field, stronger alpha,
+/// painting every cell in its region.
+pub fn render_bright(buf: &mut Buffer, area: Rect, t: f32, charset: Charset) {
+    let opacity = match charset {
+        Charset::Blocks => BRIGHT_OPACITY,
+        Charset::Braille => BRIGHT_BRAILLE_OPACITY,
+    };
+    paint(buf, area, t, charset, false, opacity);
+}
+
+fn paint(buf: &mut Buffer, area: Rect, t: f32, charset: Charset, blank_only: bool, opacity: f32) {
     let (w, h) = (area.width, area.height);
     if w == 0 || h == 0 {
         return;
@@ -196,10 +217,6 @@ pub fn render(buf: &mut Buffer, area: Rect, t: f32, charset: Charset, blank_only
         // Anchor the field to the bottom edge: full strength at the last row,
         // fading to the ground at the top, so the band dissolves up toward the
         // content instead of floating with a faded top edge.
-        let opacity = match charset {
-            Charset::Blocks => OPACITY,
-            Charset::Braille => BRAILLE_OPACITY,
-        };
         let alpha = opacity * y;
         for cx in 0..w {
             let x = (cx as f32 + 0.5) / wf;

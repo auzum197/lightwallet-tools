@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::app::{App, BlockRow, Focus, Phase, ResolveProgress, Row, TaddrHit, TxOrigin, View};
 use crate::dither;
 use crate::health::Health;
+use crate::sphere;
 use crate::theme::{self, color};
 use lightwallet_txview::{
     Blob, Fee, InputTotal, PoolInput, PoolOutput, Staking, StakingKind, Value, format_zats,
@@ -36,7 +37,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     render_header(f, header, app);
     render_body(f, body, app);
-    // Help is a modal over the current view, not a replacement for it.
+    // Help and about are modals over the current view, not replacements for it.
     if app.focus == Focus::Help {
         render_help(f, body);
     }
@@ -44,6 +45,11 @@ pub fn draw(f: &mut Frame, app: &App) {
     // The gradient rides the empty space at the bottom of the focused pane, so
     // it renders last, over whatever is already drawn (skipping filled cells).
     gradient_band(f, body, footer, app);
+    if app.focus == Focus::About {
+        dim_area(f, f.area());
+        darken_area(f, f.area(), BACKDROP_DROP);
+        render_about(f, body, app);
+    }
 }
 
 /// The column range the gradient may fill: the focused tx list (mempool) or the
@@ -127,6 +133,9 @@ fn gradient_band(f: &mut Frame, body: Rect, footer: Rect, app: &App) {
 /// read as inactive, not so much that it stops being legible.
 const DIM_AMOUNT: f32 = 0.45;
 
+/// Extra darkening on the about backdrop, past the ground.
+const BACKDROP_DROP: f32 = 0.18;
+
 /// Fade an already-rendered region toward the background, marking it unfocused.
 /// Cells left at the terminal default foreground (`Reset`) resolve to the theme
 /// text color before fading, so plain text dims with everything else. The frame
@@ -139,6 +148,24 @@ fn dim_area(f: &mut Frame, area: Rect) {
             if let Some(cell) = buf.cell_mut((x, y)) {
                 cell.set_fg(fade(cell.fg, Some(theme::TEXT)));
                 cell.set_bg(fade(cell.bg, None));
+            }
+        }
+    }
+}
+
+/// Pull a region's colors toward black by `amount`, background included.
+fn darken_area(f: &mut Frame, area: Rect, amount: f32) {
+    let black = theme::rgb(0, 0, 0);
+    let buf = f.buffer_mut();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                if let Color::Rgb(r, g, b) = cell.fg {
+                    cell.set_fg(theme::lerp(theme::rgb(r, g, b), black, amount));
+                }
+                if let Color::Rgb(r, g, b) = cell.bg {
+                    cell.set_bg(theme::lerp(theme::rgb(r, g, b), black, amount));
+                }
             }
         }
     }
@@ -1117,6 +1144,7 @@ fn render_help(f: &mut Frame, area: Rect) {
     let rows = [
         ("q  /  Ctrl-C", "quit"),
         ("?", "toggle this help"),
+        ("a", "about lwtui"),
         ("Tab", "switch mempool ⇄ blocks"),
         ("/", "search: height, txid, or t-address"),
         (
@@ -1166,6 +1194,179 @@ fn render_help(f: &mut Frame, area: Rect) {
             .style(Style::default().bg(color(theme::BG))),
         modal,
     );
+}
+
+/// The about modal: identity lines over an animated centerpiece, a shaded
+/// sphere under an orbiting light hanging in the sky above a brighter cut of
+/// the dither sea. Esc, `q`, or `a` closes the modal. The animation runs on the wall
+/// clock, so it keeps spinning while the feed is paused. When the stage is
+/// too small for the sphere, the sea fills it alone.
+fn render_about(f: &mut Frame, area: Rect, app: &App) {
+    // The dialog holds 3/5 of the width and 3/4 of the height, at any
+    // terminal size; `centered` clamps the floors on a screen too small to
+    // honor them.
+    let w = (area.width * 3 / 5).max(24);
+    let h = (area.height * 3 / 4).max(9);
+    let modal = centered(area, w, h);
+    f.render_widget(Clear, modal);
+    let dialog = Block::default()
+        .borders(Borders::TOP | Borders::BOTTOM)
+        .border_style(Style::default().fg(color(theme::ACCENT_DIM)))
+        .title(Span::styled(
+            "─about",
+            Style::default().fg(color(theme::ACCENT_DIM)),
+        ))
+        .style(Style::default().bg(color(theme::BG)));
+    let inner = dialog.inner(modal);
+    f.render_widget(dialog, modal);
+
+    let idlines = vec![
+        Line::from(Span::styled(
+            format!("lwtui {}", env!("CARGO_PKG_VERSION")),
+            Style::default()
+                .fg(color(theme::ACCENT_HI))
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "a live terminal monitor for Zcash lightwallet indexers",
+            Style::default().fg(color(theme::TEXT)),
+        )),
+        Line::from(Span::styled(
+            "github.com/auzum197/lightwallet-tools",
+            Style::default().fg(color(theme::FAINT)),
+        )),
+    ];
+    let text_h = (idlines.len() as u16 + 1).min(inner.height);
+    f.render_widget(
+        Paragraph::new(idlines).alignment(Alignment::Center),
+        Rect {
+            height: text_h,
+            ..inner
+        },
+    );
+
+    let mut credit_at = None;
+    if inner.height > text_h {
+        let full = Rect {
+            y: inner.y + text_h,
+            height: inner.height - text_h,
+            ..inner
+        };
+        let sea_h = (full.height / 3).max(2).min(full.height);
+        let sky_h = full.height - sea_h;
+        if sky_h >= 6 && full.width >= 14 {
+            let ry = (sky_h as f32 / 2.0).min(full.width as f32 / 4.0);
+            let cx = full.x as f32 + full.width as f32 / 2.0;
+            let cy = full.y as f32 + sky_h as f32 / 2.0;
+            let x = (cx + ry * 2.0 + 2.0) as u16;
+            let y = (cy - ry * 0.5) as u16;
+            if x + CREDIT.len() as u16 <= inner.right() {
+                credit_at = Some((x, y));
+            }
+        }
+        let stage = if credit_at.is_some() {
+            full
+        } else {
+            Rect {
+                height: full.height - 1,
+                ..full
+            }
+        };
+        if stage.height > 1 {
+            let e = app.elapsed();
+            // The sea steps at the dither field's 90ms cadence; the sphere runs
+            // at the frame loop's full ~30fps so the orbit sweeps smoothly.
+            let sea_t = (e / 0.09).floor() * 0.09 * 0.5;
+            let sphere_t = (e / 0.033).floor() * 0.033;
+            let charset = app.dither.unwrap_or(dither::Charset::Blocks);
+            let buf = f.buffer_mut();
+            // The bottom third is water, the sky above holds the sphere, so the
+            // two never overlap. Too small a sky, and the water floods the stage.
+            let sea_h = (stage.height / 3).max(2).min(stage.height);
+            let sky_h = stage.height - sea_h;
+            if sky_h >= 6 && stage.width >= 14 {
+                let sea = Rect {
+                    y: stage.bottom() - sea_h,
+                    height: sea_h,
+                    ..stage
+                };
+                dither::render_bright(buf, sea, sea_t, charset);
+                let sky = Rect {
+                    height: sky_h,
+                    ..stage
+                };
+                sphere::render(buf, sky, sphere_t);
+                sphere::shadow(buf, sea, sky, sphere_t);
+                sphere::particles(buf, sky, sphere_t);
+            } else {
+                dither::render_bright(buf, stage, sea_t, charset);
+            }
+        }
+    }
+    let credit = Line::from(credit_spans(app.elapsed()));
+    match credit_at {
+        Some((x, y)) => f.render_widget(
+            Paragraph::new(credit),
+            Rect {
+                x,
+                y,
+                width: CREDIT.len() as u16,
+                height: 1,
+            },
+        ),
+        None if inner.height > text_h => f.render_widget(
+            Paragraph::new(credit).alignment(Alignment::Center),
+            Rect {
+                y: inner.bottom() - 1,
+                height: 1,
+                ..inner
+            },
+        ),
+        None => {}
+    }
+}
+
+/// The about pane's sign-off, drawn in the sphere's gold.
+const CREDIT: &str = "Made with <3 by Auzum";
+
+/// A cheap unit-interval hash for the credit shimmer's per-cycle jitter.
+fn hash01(seed: u32) -> f32 {
+    let mut x = seed.wrapping_mul(0x9e37_79b9);
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x85eb_ca6b);
+    x ^= x >> 13;
+    (x >> 8) as f32 / (1u32 << 24) as f32
+}
+
+/// The credit in its gold, with a single highlight pass sweeping across it
+/// once per 8-second slot, at a per-slot random offset up to 3s. The
+/// highlight spans six characters, brightest at its center, lifting the gold
+/// toward warm white.
+fn credit_spans(e: f32) -> Vec<Span<'static>> {
+    const SLOT: f32 = 8.0;
+    const JITTER: f32 = 3.0;
+    const SWEEP: f32 = 0.9;
+    const RADIUS: f32 = 3.0;
+    let slot = (e / SLOT) as u32;
+    let start = slot as f32 * SLOT + JITTER * hash01(slot);
+    let local = e - start;
+    let center = (local / SWEEP) * (CREDIT.len() as f32 + 2.0 * RADIUS) - RADIUS;
+    CREDIT
+        .chars()
+        .enumerate()
+        .map(|(i, ch)| {
+            let w = if (0.0..SWEEP).contains(&local) {
+                let d = (i as f32 - center).abs() / RADIUS;
+                (1.0 - d * d).max(0.0)
+            } else {
+                0.0
+            };
+            Span::styled(
+                ch.to_string(),
+                Style::default().fg(theme::lerp(theme::ACCENT_HI, theme::TEXT, w)),
+            )
+        })
+        .collect()
 }
 
 /// A block hash shortened for the list, in display (reversed) byte order.
@@ -1263,6 +1464,40 @@ mod tests {
         assert!(out.contains("help"), "the dialog is shown");
         // The block list stays visible around the dialog: it's an overlay.
         assert!(out.contains("height"), "the view behind stays visible");
+    }
+
+    #[test]
+    fn about_is_a_modal_over_the_current_view() {
+        let mut app = app();
+        app.apply(Update::Phase(Phase::Live));
+        app.apply(Update::MinedBlock(block(100, 1_700_000_000)));
+        app.on_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Char('a'),
+        ));
+        let out = render(&app);
+        assert!(
+            out.contains("a live terminal monitor"),
+            "the dialog is shown"
+        );
+        assert!(out.contains(concat!("lwtui ", env!("CARGO_PKG_VERSION"))));
+        assert!(out.contains("Made with <3 by Auzum"));
+        // The block list stays visible around the dialog: it's an overlay.
+        assert!(out.contains("height"), "the view behind stays visible");
+    }
+
+    #[test]
+    fn the_about_stage_carries_the_sphere_on_a_tall_terminal() {
+        let mut app = app();
+        app.apply(Update::Phase(Phase::Live));
+        app.on_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Char('a'),
+        ));
+        let out = render_sized(&app, 120, 60);
+        // The lit face lands on the bright end of the ramp somewhere.
+        assert!(
+            out.contains('@') || out.contains('8') || out.contains('G'),
+            "the sphere's bright face renders"
+        );
     }
 
     #[test]

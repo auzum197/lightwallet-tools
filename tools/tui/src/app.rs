@@ -113,7 +113,7 @@ pub enum View {
     Results,
 }
 
-/// Where keys route. `Help` remembers where it was opened from.
+/// Where keys route. `Help` and `About` remember where they were opened from.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Focus {
     List,
@@ -122,6 +122,7 @@ pub enum Focus {
     Tx,
     Search,
     Help,
+    About,
 }
 
 /// What opened the tx detail, which decides where Left/Esc returns and what
@@ -368,9 +369,11 @@ impl App {
 
     fn dither_active(&self) -> bool {
         // The gradient runs continuously while visible: only a manual pause or
-        // search/help (which take over the footer) freeze it. It never idles
-        // out, so it keeps drifting whether or not the user is typing.
-        self.dither.is_some() && !self.paused && !matches!(self.focus, Focus::Search | Focus::Help)
+        // a modal (search/help/about, which cover or take over its ground)
+        // freezes it.
+        self.dither.is_some()
+            && !self.paused
+            && !matches!(self.focus, Focus::Search | Focus::Help | Focus::About)
     }
 
     /// The field time for the current frame, `t` advancing 0.5 units a second of
@@ -689,6 +692,14 @@ impl App {
         match self.focus {
             Focus::Search => self.search_key(key),
             Focus::Help => self.focus = self.return_focus,
+            Focus::About => {
+                if matches!(
+                    key.code,
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('a')
+                ) {
+                    self.focus = self.return_focus;
+                }
+            }
             Focus::List | Focus::Block | Focus::Tx => return self.list_or_detail_key(key),
         }
         false
@@ -701,6 +712,11 @@ impl App {
             KeyCode::Char('?') => {
                 self.return_focus = self.focus;
                 self.focus = Focus::Help;
+                return false;
+            }
+            KeyCode::Char('a') => {
+                self.return_focus = self.focus;
+                self.focus = Focus::About;
                 return false;
             }
             KeyCode::Char(' ') => {
@@ -1664,6 +1680,22 @@ mod tests {
         assert_eq!(app.focus, Focus::Help);
         app.on_key(press(KeyCode::Char('j')));
         assert_eq!(app.focus, Focus::List);
+    }
+
+    #[test]
+    fn about_opens_and_only_its_own_keys_dismiss() {
+        let TestApp { mut app, .. } = app();
+        app.on_key(press(KeyCode::Char('a')));
+        assert_eq!(app.focus, Focus::About);
+        app.on_key(press(KeyCode::Char('j')));
+        assert_eq!(app.focus, Focus::About, "a stray key keeps the pane open");
+        app.on_key(press(KeyCode::Char('a')));
+        assert_eq!(app.focus, Focus::List);
+        for code in [KeyCode::Esc, KeyCode::Char('q')] {
+            app.on_key(press(KeyCode::Char('a')));
+            app.on_key(press(code));
+            assert_eq!(app.focus, Focus::List);
+        }
     }
 
     #[test]
