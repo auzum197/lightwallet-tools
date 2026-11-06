@@ -477,6 +477,7 @@ async fn crosslink_only_surface_answers_concretely() {
             BondInfoResponse {
                 amount: 5_000,
                 status: 1,
+                last_action_height: 42,
             },
         )
         .with_faucet_amount(250_000);

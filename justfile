@@ -4,7 +4,7 @@ canonical_repo := "https://github.com/zcash/lightwallet-protocol.git"
 canonical_service := "proto/canonical/walletrpc/service.proto"
 overlay := "proto/overlay/crosslink.proto"
 snapshot := "proto/overlay/reference/crosslink_monolith-service.proto"
-snapshot_url := "https://raw.githubusercontent.com/ShieldedLabs/crosslink_monolith/main/zaino/zaino-proto/lightwallet-protocol/walletrpc/service.proto"
+snapshot_url := "https://raw.githubusercontent.com/ShieldedLabs/crosslink_monolith/main/librustzcash/zcash_client_backend/lightwallet-protocol/walletrpc/service.proto"
 
 default:
     @just --list

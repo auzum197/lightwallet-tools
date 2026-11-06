@@ -807,11 +807,11 @@ impl App {
             KeyCode::Char('y') => self.copy_json(),
             KeyCode::Char('Y') => self.copy_raw(),
             KeyCode::Enter | KeyCode::Right => self.open_selected(),
-            KeyCode::Esc => {
+            KeyCode::Esc
                 // Leave the transient results view back to the tail.
-                if self.view == View::Results {
-                    self.view = View::Blocks;
-                }
+                if self.view == View::Results =>
+            {
+                self.view = View::Blocks;
             }
             _ => {}
         }
