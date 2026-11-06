@@ -333,6 +333,7 @@ async fn bond_info_takes_wire_order_hex() {
         lightwallet_proto_crosslink::BondInfoResponse {
             amount: 7_000,
             status: 2,
+            last_action_height: 50,
         },
     );
     let url = serve_crosslink(mock).await;

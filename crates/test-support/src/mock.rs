@@ -551,6 +551,13 @@ macro_rules! mock_streamer {
                 Ok(tonic::Response::new(self.lightd_info.clone()))
             }
 
+            async fn get_standard_fee(
+                &self,
+                _request: tonic::Request<$proto::Empty>,
+            ) -> std::result::Result<tonic::Response<$proto::StandardFee>, tonic::Status> {
+                Err(tonic::Status::unimplemented("not modeled by the mock"))
+            }
+
             async fn ping(
                 &self,
                 _request: tonic::Request<$proto::Duration>,
