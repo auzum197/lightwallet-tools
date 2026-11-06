@@ -1228,7 +1228,7 @@ fn render_about(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(
-            "a live terminal monitor for Zcash lightwallet indexers",
+            "a live terminal monitor for Zcash indexers",
             Style::default().fg(color(theme::TEXT)),
         )),
         Line::from(Span::styled(
