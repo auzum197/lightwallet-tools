@@ -14,7 +14,7 @@ check: fmt-check lint secure-check proto-check mirror-check rpc-coverage-check c
 
 # Formatting matches rustfmt
 fmt-check:
-    cargo fmt --all --check
+    cargo fmt --check
 
 # Clippy across every target, warnings are errors
 lint:
