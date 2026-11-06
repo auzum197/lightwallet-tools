@@ -10,19 +10,24 @@ license = "MIT OR Apache-2.0"
 
 [workspace.lints.rust]
 missing_docs = "deny"
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(zcash_unstable, values("crosslink"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(zcash_unstable, values("crosslink"))',
+] }
 
 [profile.release]
 overflow-checks = true
 
-# The Crosslink staking surface (TxVersion::VCrosslink, StakingAction) lives in
-# the auzum-zcash fork, behind zcash_unstable = "crosslink". The fork's
-# zcash_transparent pulls the published zcash_protocol transitively, so the
-# patch is mandatory: a path/git dep alone does not propagate through it.
-[patch.crates-io]
-zcash_protocol = { git = "https://github.com/auzum197/auzum-zcash", rev = "f4f1f53af0958a21a6163a118652b4a23b7215fb" }
-
 [workspace.dependencies]
+
+# Zcash. The Crosslink staking surface (TxVersion::VCrosslink, StakingAction)
+# lives in the auzum-zcash fork, behind zcash_unstable = "crosslink", and is
+# consumed from the sibling checkout. The fork renames its in-tree protocol crate
+# to auzum-zcash-protocol and pins auzum-orchard, so both must come from the same
+# place for the types to unify with zcash_primitives.
+zcash_primitives = { path = "../auzum-zcash/zcash_primitives" }
+zcash_protocol = { package = "auzum-zcash-protocol", path = "../auzum-zcash/components/zcash_protocol" }
+orchard = { git = "https://github.com/auzum197/auzum-orchard.git", rev = "3c4a14a2b7eb962bbe9e7f06cdd6fea148e737d6" }
+
 prost = "0.14"
 tonic = "0.14"
 futures-util = "0.3"
@@ -44,8 +49,7 @@ hex = "0.4"
 anyhow = "1"
 ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }
-zcash_primitives = { git = "https://github.com/auzum197/auzum-zcash", rev = "f4f1f53af0958a21a6163a118652b4a23b7215fb" }
-orchard = "0.15"
-zcash_protocol = "0.10"
+
+# Tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

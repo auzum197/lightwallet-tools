@@ -680,7 +680,7 @@ pub fn parse<P: Parameters>(data: &[u8], height: BlockHeight, params: &P) -> Par
                     cmu: hex::encode(od.cmu().to_bytes()),
                     ephemeral_key: hex::encode(od.ephemeral_key().0),
                     enc_ciphertext: Blob {
-                        bytes: od.enc_ciphertext().len(),
+                        bytes: od.enc_ciphertext().as_ref().len(),
                     },
                     out_ciphertext: Blob {
                         bytes: od.out_ciphertext().len(),
@@ -889,7 +889,7 @@ where
             cmx: hex::encode(act.cmx().to_bytes()),
             ephemeral_key: hex::encode(note.epk_bytes),
             enc_ciphertext: Blob {
-                bytes: note.enc_ciphertext.len(),
+                bytes: note.enc_ciphertext.as_ref().len(),
             },
             out_ciphertext: Blob {
                 bytes: note.out_ciphertext.len(),
